@@ -1,0 +1,9 @@
+[toolchain]
+# Pinned to a Rust contemporary with this polkadot-sdk snapshot
+# (Sep 2025). Newer Rust (>=1.9x) turns some upstream `#[deprecated]`
+# placements in frame-executive into hard errors, so the channel must be
+# pinned rather than tracking `stable`.
+channel = "1.86.0"
+components = ["rust-src", "clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

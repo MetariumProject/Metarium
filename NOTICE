@@ -1,0 +1,16 @@
+Metarium
+========
+
+This repository is a derivative work of the Polkadot SDK
+(https://github.com/paritytech/polkadot-sdk), Copyright (C) Parity Technologies and
+contributors, distributed on a per-crate basis under the GNU General Public License
+v3.0 and/or the Apache License 2.0. Those upstream crates retain their original
+licenses and copyright notices — see each crate's Cargo.toml and the LICENSE-GPL3 /
+LICENSE-APACHE2 files under substrate/, polkadot/, cumulus/, and bridges/.
+
+The Metarium-specific additions in this repository — notably:
+  - templates/parachain/pallets/metarium   (pallet-metarium)
+  - the Metarium runtime configuration in templates/solochain/runtime
+  - genesis/
+are Copyright (C) 2022-2026 Vignesh Sundaresan and are licensed under the
+GNU General Public License v3.0 only. See the LICENSE file at the repository root.
