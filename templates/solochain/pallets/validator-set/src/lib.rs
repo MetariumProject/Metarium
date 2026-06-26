@@ -3,11 +3,11 @@
 //! # Validator Set pallet
 //!
 //! A deliberately small pallet that owns the active validator set for the
-//! mnemchain solochain and exposes it to `pallet-session` as a
+//! metarium solochain and exposes it to `pallet-session` as a
 //! [`SessionManager`](pallet_session::SessionManager).
 //!
 //! Validators are added/removed by a configurable origin (sudo / root on
-//! mnemchain today). When the set changes, the change is staged and applied at
+//! metarium today). When the set changes, the change is staged and applied at
 //! the next session rotation, at which point `pallet-aura` (block production)
 //! and `pallet-grandpa` (finality) pick up the new authorities via the session
 //! key plumbing. This is what makes "spin up a new validator on demand"
@@ -37,7 +37,7 @@ pub mod pallet {
 		type RuntimeEvent: From<Event<Self>>
 			+ IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
-		/// Origin allowed to add and remove validators (root / sudo on mnemchain).
+		/// Origin allowed to add and remove validators (root / sudo on metarium).
 		type AddRemoveOrigin: EnsureOrigin<Self::RuntimeOrigin>;
 
 		/// The minimum number of validators the set may shrink to. The set can

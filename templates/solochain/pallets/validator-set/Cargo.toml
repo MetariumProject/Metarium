@@ -1,6 +1,6 @@
 [package]
 name = "pallet-validator-set"
-description = "Minimal sudo-governed validator set for the mnemchain solochain. Acts as a pallet-session SessionManager so validators can be added/removed on a live chain."
+description = "Minimal sudo-governed validator set for the metarium solochain. Acts as a pallet-session SessionManager so validators can be added/removed on a live chain."
 version = "0.0.0"
 license = "Unlicense"
 authors.workspace = true
