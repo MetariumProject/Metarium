@@ -8,31 +8,38 @@ Metarium is a [Substrate](https://github.com/paritytech/polkadot-sdk)-based bloc
 - a **custodian-metadata commit thread** that serializes concurrent writers behind an on-chain lock;
 - node reachability (`NodeInfoMap`), a bookUUID ↔ channel binding, and a membership reverse-index.
 
-It is the chain the Metarium / mnem ecosystem runs: a sudo-governed solochain with AURA authoring + GRANDPA
-finality, validators managed via `pallet-validator-set`.
+It is a **template**: a sudo-governed solochain (AURA authoring + GRANDPA finality, validators managed via
+`pallet-validator-set`) that you **fork, name as your own chain, then compile and launch**. Nothing here is a
+live network — you generate your own genesis.
 
 This repository is a **fork of the [Polkadot SDK](https://github.com/paritytech/polkadot-sdk)** with the
-Metarium runtime and pallet added. Anyone may clone, build, run, and fork it.
+Metarium runtime and pallet added. Anyone may clone, rename, build, run, and fork it.
 
 ## Layout
-- **`templates/solochain/`** — the **Metarium solochain**: the runtime (live `spec_version` 102, wiring
-  `pallet-metarium`) and the `solochain-template-node`.
+- **`templates/solochain/`** — the **Metarium solochain template**: the runtime (wiring `pallet-metarium`)
+  and the `solochain-template-node`.
 - **`templates/parachain/pallets/metarium/`** — **`pallet-metarium`**, the core pallet.
-- **`genesis/`** — a canonical genesis (raw chain spec + runtime wasm) you can boot a node from, with
-  verification instructions (see [`genesis/GENESIS.md`](genesis/GENESIS.md)).
 - **`substrate/`, `polkadot/`, `cumulus/`, `bridges/`** — the vendored Polkadot SDK this builds on.
 
-## Build & run
-```bash
-# the toolchain is pinned by rust-toolchain.toml
-cargo build --release -p solochain-template-node
-
-# a throwaway dev node
-./target/release/solochain-template-node --dev
-
-# or boot from the canonical genesis (block 0 is fully defined by the spec)
-./target/release/solochain-template-node --chain genesis/chainspec-raw.json
-```
+## Make it your own chain
+1. **Name it.** Set your chain's identity in `templates/solochain/runtime/src/lib.rs` — `spec_name` /
+   `impl_name` (they default to `"metarium"`) — and set your token/SS58 in the runtime as you like.
+2. **Build.**
+   ```bash
+   # the toolchain is pinned by rust-toolchain.toml
+   cargo build --release -p solochain-template-node
+   ```
+3. **Run a dev node** to try it:
+   ```bash
+   ./target/release/solochain-template-node --dev
+   ```
+4. **Generate your own genesis** for a real network (this template ships none):
+   ```bash
+   ./target/release/solochain-template-node build-spec --chain local > my-chain.json
+   # edit validators / sudo / balances, then convert to a raw spec:
+   ./target/release/solochain-template-node build-spec --chain my-chain.json --raw > my-chain-raw.json
+   ./target/release/solochain-template-node --chain my-chain-raw.json
+   ```
 See [`templates/solochain/README.md`](templates/solochain/README.md) for node details.
 
 ## License
