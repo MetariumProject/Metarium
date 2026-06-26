@@ -24,7 +24,16 @@ Metarium runtime and pallet added. Anyone may clone, rename, build, run, and for
 ## Make it your own chain
 1. **Name it.** Set your chain's identity in `templates/solochain/runtime/src/lib.rs` — `spec_name` /
    `impl_name` (they default to `"metarium"`) — and set your token/SS58 in the runtime as you like.
-2. **Build.**
+2. **Build.** First install the native build prereqs (Substrate needs a C/C++ toolchain, LLVM/`libclang`
+   for `librocksdb-sys` bindgen, protobuf, and cmake):
+   ```bash
+   # Debian/Ubuntu
+   sudo apt-get install -y build-essential clang libclang-dev llvm protobuf-compiler cmake
+   # macOS (Apple clang lacks a bindgen-discoverable libclang, so install LLVM and point at it)
+   xcode-select --install 2>/dev/null || true
+   brew install llvm protobuf cmake
+   export LIBCLANG_PATH="$(brew --prefix llvm)/lib"   # add to your shell profile
+   ```
    ```bash
    # the toolchain is pinned by rust-toolchain.toml
    cargo build --release -p solochain-template-node
