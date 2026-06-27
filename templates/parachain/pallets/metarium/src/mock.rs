@@ -69,3 +69,14 @@ impl pallet_metarium::Config for Test {
 pub fn new_test_ext() -> sp_io::TestExternalities {
 	system::GenesisConfig::<Test>::default().build_storage().unwrap().into()
 }
+
+// Build genesis with pre-seeded inventory-channel entries (the Phase 1b genesis path).
+pub fn new_test_ext_with_inventory(entries: Vec<(u64, u64)>) -> sp_io::TestExternalities {
+	RuntimeGenesisConfig {
+		system: Default::default(),
+		metarium: pallet_metarium::GenesisConfig { inventory_channels: entries },
+	}
+	.build_storage()
+	.unwrap()
+	.into()
+}

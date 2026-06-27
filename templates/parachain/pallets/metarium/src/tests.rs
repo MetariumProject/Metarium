@@ -6767,3 +6767,21 @@ fn set_inventory_channel_requires_signed_origin() {
 		);
 	});
 }
+
+#[test]
+fn inventory_channel_is_seeded_from_genesis() {
+	// A fresh chain resolves pre-seeded inventory pointers with NO runtime upgrade and no extrinsic.
+	new_test_ext_with_inventory(vec![(SCRIBE_1, 7), (NON_SCRIBE, 42)]).execute_with(|| {
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(7));
+		assert_eq!(InventoryChannelOf::<Test>::get(NON_SCRIBE), Some(42));
+		// An account not in the genesis set resolves to None.
+		assert_eq!(InventoryChannelOf::<Test>::get(CONFIGURATOR), None);
+	});
+}
+
+#[test]
+fn empty_genesis_has_no_inventory_channels() {
+	new_test_ext_with_inventory(vec![]).execute_with(|| {
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+	});
+}

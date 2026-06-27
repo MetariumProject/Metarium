@@ -516,6 +516,25 @@ pub mod pallet {
 		CallForbidden,
 	}
 
+	/// Genesis: pre-seed `InventoryChannelOf` so a fresh chain resolves operators' inventory books
+	/// with no runtime upgrade (e.g. the founder's inventory pointer). Entries are written verbatim
+	/// (genesis is trusted config); the channel-exists check is enforced only on the extrinsic path.
+	#[pallet::genesis_config]
+	#[derive(frame_support::DefaultNoBound)]
+	pub struct GenesisConfig<T: Config> {
+		/// `(account, channel_id)` pairs written into `InventoryChannelOf` at genesis.
+		pub inventory_channels: Vec<(T::AccountId, u64)>,
+	}
+
+	#[pallet::genesis_build]
+	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+		fn build(&self) {
+			for (account, channel_id) in &self.inventory_channels {
+				<InventoryChannelOf<T>>::insert(account, channel_id);
+			}
+		}
+	}
+
 	/// ChannelMembership role flags (a bitmask — an account can hold several roles in one channel).
 	pub const ROLE_CUSTODIAN: u8 = 0b0000_0001;
 	pub const ROLE_CONFIGURATOR: u8 = 0b0000_0010;
