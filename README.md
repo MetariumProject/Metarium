@@ -18,7 +18,9 @@ Metarium runtime and pallet added. Anyone may clone, rename, build, run, and for
 ## Layout
 - **`templates/solochain/`** — the **Metarium solochain template**: the runtime (wiring `pallet-metarium`)
   and the `solochain-template-node`.
-- **`templates/parachain/pallets/metarium/`** — **`pallet-metarium`**, the core pallet.
+- **`templates/parachain/pallets/metarium/`** — **`pallet-metarium`**, the core pallet. (It lives under
+  the `parachain/` path but is a **shared crate the solochain runtime depends on** — its location does
+  not make Metarium a parachain. See [`AGENTS.md`](AGENTS.md).)
 - **`substrate/`, `polkadot/`, `cumulus/`, `bridges/`** — the vendored Polkadot SDK this builds on.
 
 ## Make it your own chain
