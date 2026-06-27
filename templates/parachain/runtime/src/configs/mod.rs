@@ -349,6 +349,8 @@ impl pallet_metarium::Config for Runtime {
 	type MaxCommitSize = frame_support::traits::ConstU64<18446744073709551615>;
 	type MaxArikurisToTransfer = ConstU32<25>;
 	type MaxCustodianMetadataHistoryLength = ConstU32<4294967295>;
+	// Blocks before a held commit-thread lock can be force-taken over (stale-lock TTL).
+	type CommitLockTtl = ConstU32<100>;
 }
 
 /// Configure the pallet-assets in substrate/frame/assets.

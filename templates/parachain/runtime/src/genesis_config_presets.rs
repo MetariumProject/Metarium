@@ -1,6 +1,7 @@
 use crate::{
-	AccountId, BalancesConfig, CollatorSelectionConfig, ParachainInfoConfig, PolkadotXcmConfig,
-	RuntimeGenesisConfig, SessionConfig, SessionKeys, SudoConfig, EXISTENTIAL_DEPOSIT,
+	AccountId, BalancesConfig, CollatorSelectionConfig, MetariumConfig, ParachainInfoConfig,
+	PolkadotXcmConfig, RuntimeGenesisConfig, SessionConfig, SessionKeys, SudoConfig,
+	EXISTENTIAL_DEPOSIT,
 };
 
 use alloc::{vec, vec::Vec};
@@ -59,6 +60,12 @@ fn testnet_genesis(
 				.collect::<Vec<_>>(),
 		},
 		polkadot_xcm: PolkadotXcmConfig { safe_xcm_version: Some(SAFE_XCM_VERSION) },
+		metarium: MetariumConfig {
+			// Seed the founder's inventory pointer at genesis (channel 1) — a fresh chain resolves
+			// InventoryChannelOf with no runtime upgrade. Genesis is trusted; the channel itself is
+			// created post-genesis via channel_added.
+			inventory_channels: vec![(root.clone(), 1)],
+		},
 		sudo: SudoConfig { key: Some(root) },
 	})
 }
