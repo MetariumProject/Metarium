@@ -8,6 +8,7 @@ use crate::{
 	ScribeSetMap, CustodianSetMap,
 	NodeInfoMap, NodeInfo,
 	TotalChannels, Channels, ChannelInfo,
+	InventoryChannelOf,
 	BookUuidToChannel, ChannelBookUuid,
 	ChannelMembership, ROLE_CUSTODIAN, ROLE_CONFIGURATOR, ROLE_MAKER, ROLE_ACTANT, ROLE_LISTENER,
 	ChannelTransferAccepted,
@@ -6673,6 +6674,96 @@ fn stale_commit_lock_can_be_taken_over_after_ttl() {
 		assert_eq!(
 			ChannelCustodianMetadataCommitThreads::<Test>::get(1).unwrap().locked_by,
 			Some(ACTANT_2)
+		);
+	});
+}
+
+
+/////// INVENTORY-CHANNEL FUNCTIONS ///////
+// set_inventory_channel / InventoryChannelOf
+
+// Create channel 1 (custodian = SCRIBE_1, configurator = CONFIGURATOR).
+fn create_channel_one() {
+	assert_ok!(Metarium::force_add_node_to_scribe_set(RuntimeOrigin::root(), SCRIBE_1));
+	assert_ok!(Metarium::force_add_node_to_custodian_set(RuntimeOrigin::root(), SCRIBE_1));
+	assert_ok!(Metarium::force_add_node_to_scribe_set(RuntimeOrigin::root(), CONFIGURATOR));
+	assert_ok!(Metarium::channel_added(RuntimeOrigin::signed(SCRIBE_1), CONFIGURATOR));
+	assert_eq!(TotalChannels::<Test>::get(), Some(1));
+}
+
+#[test]
+fn set_inventory_channel_sets_and_resolves_round_trip() {
+	new_test_ext().execute_with(|| {
+		System::set_block_number(1);
+		create_channel_one();
+		// Unset resolves to None.
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+		// SCRIBE_1 points its inventory at channel 1.
+		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
+		// It resolves.
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(1));
+		// The event is emitted.
+		assert!(metarium_events().contains(&Event::<Test>::InventoryChannelSet(SCRIBE_1, 1)));
+	});
+}
+
+#[test]
+fn set_inventory_channel_overwrites_as_migration() {
+	new_test_ext().execute_with(|| {
+		create_channel_one();
+		// Add a second channel (id 2).
+		assert_ok!(Metarium::channel_added(RuntimeOrigin::signed(SCRIBE_1), CONFIGURATOR));
+		assert_eq!(TotalChannels::<Test>::get(), Some(2));
+		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(1));
+		// Re-setting overwrites — an inventory migration to channel 2.
+		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 2));
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(2));
+	});
+}
+
+#[test]
+fn set_inventory_channel_is_none_for_unset_account() {
+	new_test_ext().execute_with(|| {
+		create_channel_one();
+		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
+		// A different account that never set its inventory resolves to None.
+		assert_eq!(InventoryChannelOf::<Test>::get(NON_SCRIBE), None);
+	});
+}
+
+#[test]
+fn set_inventory_channel_is_self_keyed_no_hijack() {
+	new_test_ext().execute_with(|| {
+		create_channel_one();
+		// NON_SCRIBE (any signed account) sets ITS OWN pointer; it cannot touch SCRIBE_1's.
+		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(NON_SCRIBE), 1));
+		assert_eq!(InventoryChannelOf::<Test>::get(NON_SCRIBE), Some(1));
+		// SCRIBE_1's entry is untouched — the key is always the signer, so no hijack is possible.
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+	});
+}
+
+#[test]
+fn set_inventory_channel_rejects_nonexistent_channel() {
+	new_test_ext().execute_with(|| {
+		// No channels created → channel 999 does not exist.
+		assert_noop!(
+			Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 999),
+			Error::<Test>::ChannelNotFound
+		);
+		// Nothing is written.
+		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+	});
+}
+
+#[test]
+fn set_inventory_channel_requires_signed_origin() {
+	new_test_ext().execute_with(|| {
+		create_channel_one();
+		assert_noop!(
+			Metarium::set_inventory_channel(RuntimeOrigin::none(), 1),
+			BadOrigin
 		);
 	});
 }

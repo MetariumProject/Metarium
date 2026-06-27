@@ -319,6 +319,17 @@ pub mod pallet {
 	pub(super) type ChannelBookUuid<T: Config> =
 		StorageMap<_, Blake2_128Concat, u64, BoundedVec<u8, T::MaxKuriLength>>;
 
+	/// account → its inventory channel id: resolve an address to the channel holding that
+	/// operator's infrastructure-inventory book. One inventory channel per account; the entry
+	/// is self-keyed (the signer is the AccountId) so it can never be set for another account.
+	/// An absent entry means inventory has not been bootstrapped for that account. Additive (no
+	/// `ChannelInfo` change, no storage migration); baked into the template so federation never
+	/// needs a runtime upgrade to resolve a new operator's inventory.
+	#[pallet::storage]
+	#[pallet::getter(fn inventory_channel_of)]
+	pub(super) type InventoryChannelOf<T: Config> =
+		StorageMap<_, Blake2_128Concat, T::AccountId, u64>;
+
 	/// (account, channel) → a role bitmask — the SCALABLE reverse membership index. `books_for_address`
 	/// iterates the (account, *) prefix off-chain (unbounded, paginated), replacing the bounded
 	/// `ChannelsPerListenerMap` and adding the previously-missing actant reverse index. ValueQuery: a
@@ -417,7 +428,9 @@ pub mod pallet {
 			BoundedVec<Kuri<T>, T::MaxArikurisToTransfer>,
 			T::AccountId,
 		),
-		ArikurisTransferred(u64, u64, BoundedVec<Kuri<T>, T::MaxArikurisToTransfer>)
+		ArikurisTransferred(u64, u64, BoundedVec<Kuri<T>, T::MaxArikurisToTransfer>),
+		/// An account set which channel holds its inventory book: (account, channel_id).
+		InventoryChannelSet(T::AccountId, u64)
 	}
 
 	// Errors inform users that something went wrong.
@@ -685,6 +698,45 @@ pub mod pallet {
 
 			// Emit NodeUpdated event.
 			Self::deposit_event(Event::NodeUpdated(signer));
+
+			// RETURN SUCCESSFUL DISPATCHRESULT //
+			Ok(())
+		}
+
+		/////// INVENTORY FUNCTIONS ///////
+
+		/// An account records which channel holds its infrastructure-inventory book.
+		/// Self-keyed: the entry is stored under the signer, so no other account can set or
+		/// hijack it; calling again overwrites (an inventory migration to a new channel). The
+		/// channel must already exist. An absent entry means inventory is not bootstrapped.
+		#[pallet::call_index(32)]
+		#[pallet::weight(
+			Weight::from_parts(11_000_000, 0)
+				.saturating_add(Weight::from_parts(0, 3514))
+				.saturating_add(T::DbWeight::get().reads(1))
+				.saturating_add(T::DbWeight::get().writes(1))
+		)]
+		pub fn set_inventory_channel(origin: OriginFor<T>, channel_id: u64) -> DispatchResult {
+			// INPUT VALIDATION //
+
+			// any signed account may point ITS OWN inventory at a channel (self-keyed below).
+			let signer = ensure_signed(origin)?;
+
+			// SANITY CHECKS //
+
+			// the channel must exist — you can't point inventory at a non-existent channel.
+			ensure!(<Channels<T>>::contains_key(channel_id), Error::<T>::ChannelNotFound);
+
+			// UPDATE STORAGE //
+
+			// self-keyed: stored under the signer, so it can never be set for another account;
+			// re-setting overwrites (inventory migration to a new channel).
+			<InventoryChannelOf<T>>::insert(&signer, channel_id);
+
+			// EMIT EVENTS //
+
+			// Emit InventoryChannelSet event.
+			Self::deposit_event(Event::InventoryChannelSet(signer, channel_id));
 
 			// RETURN SUCCESSFUL DISPATCHRESULT //
 			Ok(())
