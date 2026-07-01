@@ -6,7 +6,7 @@ authoring + GRANDPA finality, sudo-governed validators (`pallet-validator-set`).
 
 ## Don't get this wrong
 - **`pallet-metarium`** (the core pallet: channels/mnembooks, arikuris, custodianship,
-  `InventoryChannelOf`, …) is a **shared crate** that physically lives at
+  `PrincipalChannelOf`, …) is a **shared crate** that physically lives at
   **`templates/parachain/pallets/metarium/`**. Its location does **NOT** make Metarium a parachain —
   the **solochain** runtime (`templates/solochain/runtime`) depends on it. Edit the pallet there; it
   flows into the solochain runtime.

@@ -319,15 +319,15 @@ pub mod pallet {
 	pub(super) type ChannelBookUuid<T: Config> =
 		StorageMap<_, Blake2_128Concat, u64, BoundedVec<u8, T::MaxKuriLength>>;
 
-	/// account → its inventory channel id: resolve an address to the channel holding that
-	/// operator's infrastructure-inventory book. One inventory channel per account; the entry
+	/// account → its principal channel id: resolve an address to the channel holding that
+	/// operator's infrastructure-inventory book. One principal channel per account; the entry
 	/// is self-keyed (the signer is the AccountId) so it can never be set for another account.
 	/// An absent entry means inventory has not been bootstrapped for that account. Additive (no
 	/// `ChannelInfo` change, no storage migration); baked into the template so federation never
 	/// needs a runtime upgrade to resolve a new operator's inventory.
 	#[pallet::storage]
-	#[pallet::getter(fn inventory_channel_of)]
-	pub(super) type InventoryChannelOf<T: Config> =
+	#[pallet::getter(fn principal_channel_of)]
+	pub(super) type PrincipalChannelOf<T: Config> =
 		StorageMap<_, Blake2_128Concat, T::AccountId, u64>;
 
 	/// (account, channel) → a role bitmask — the SCALABLE reverse membership index. `books_for_address`
@@ -430,7 +430,7 @@ pub mod pallet {
 		),
 		ArikurisTransferred(u64, u64, BoundedVec<Kuri<T>, T::MaxArikurisToTransfer>),
 		/// An account set which channel holds its inventory book: (account, channel_id).
-		InventoryChannelSet(T::AccountId, u64)
+		PrincipalChannelSet(T::AccountId, u64)
 	}
 
 	// Errors inform users that something went wrong.
@@ -516,21 +516,21 @@ pub mod pallet {
 		CallForbidden,
 	}
 
-	/// Genesis: pre-seed `InventoryChannelOf` so a fresh chain resolves operators' inventory books
+	/// Genesis: pre-seed `PrincipalChannelOf` so a fresh chain resolves operators' inventory books
 	/// with no runtime upgrade (e.g. the founder's inventory pointer). Entries are written verbatim
 	/// (genesis is trusted config); the channel-exists check is enforced only on the extrinsic path.
 	#[pallet::genesis_config]
 	#[derive(frame_support::DefaultNoBound)]
 	pub struct GenesisConfig<T: Config> {
-		/// `(account, channel_id)` pairs written into `InventoryChannelOf` at genesis.
-		pub inventory_channels: Vec<(T::AccountId, u64)>,
+		/// `(account, channel_id)` pairs written into `PrincipalChannelOf` at genesis.
+		pub principal_channels: Vec<(T::AccountId, u64)>,
 	}
 
 	#[pallet::genesis_build]
 	impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
 		fn build(&self) {
-			for (account, channel_id) in &self.inventory_channels {
-				<InventoryChannelOf<T>>::insert(account, channel_id);
+			for (account, channel_id) in &self.principal_channels {
+				<PrincipalChannelOf<T>>::insert(account, channel_id);
 			}
 		}
 	}
@@ -735,7 +735,7 @@ pub mod pallet {
 				.saturating_add(T::DbWeight::get().reads(1))
 				.saturating_add(T::DbWeight::get().writes(1))
 		)]
-		pub fn set_inventory_channel(origin: OriginFor<T>, channel_id: u64) -> DispatchResult {
+		pub fn set_principal_channel(origin: OriginFor<T>, channel_id: u64) -> DispatchResult {
 			// INPUT VALIDATION //
 
 			// any signed account may point ITS OWN inventory at a channel (self-keyed below).
@@ -750,12 +750,12 @@ pub mod pallet {
 
 			// self-keyed: stored under the signer, so it can never be set for another account;
 			// re-setting overwrites (inventory migration to a new channel).
-			<InventoryChannelOf<T>>::insert(&signer, channel_id);
+			<PrincipalChannelOf<T>>::insert(&signer, channel_id);
 
 			// EMIT EVENTS //
 
-			// Emit InventoryChannelSet event.
-			Self::deposit_event(Event::InventoryChannelSet(signer, channel_id));
+			// Emit PrincipalChannelSet event.
+			Self::deposit_event(Event::PrincipalChannelSet(signer, channel_id));
 
 			// RETURN SUCCESSFUL DISPATCHRESULT //
 			Ok(())
