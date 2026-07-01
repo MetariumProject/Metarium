@@ -8,7 +8,7 @@ use crate::{
 	ScribeSetMap, CustodianSetMap,
 	NodeInfoMap, NodeInfo,
 	TotalChannels, Channels, ChannelInfo,
-	InventoryChannelOf,
+	PrincipalChannelOf,
 	BookUuidToChannel, ChannelBookUuid,
 	ChannelMembership, ROLE_CUSTODIAN, ROLE_CONFIGURATOR, ROLE_MAKER, ROLE_ACTANT, ROLE_LISTENER,
 	ChannelTransferAccepted,
@@ -6680,7 +6680,7 @@ fn stale_commit_lock_can_be_taken_over_after_ttl() {
 
 
 /////// INVENTORY-CHANNEL FUNCTIONS ///////
-// set_inventory_channel / InventoryChannelOf
+// set_principal_channel / PrincipalChannelOf
 
 // Create channel 1 (custodian = SCRIBE_1, configurator = CONFIGURATOR).
 fn create_channel_one() {
@@ -6692,96 +6692,96 @@ fn create_channel_one() {
 }
 
 #[test]
-fn set_inventory_channel_sets_and_resolves_round_trip() {
+fn set_principal_channel_sets_and_resolves_round_trip() {
 	new_test_ext().execute_with(|| {
 		System::set_block_number(1);
 		create_channel_one();
 		// Unset resolves to None.
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), None);
 		// SCRIBE_1 points its inventory at channel 1.
-		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
+		assert_ok!(Metarium::set_principal_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
 		// It resolves.
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(1));
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), Some(1));
 		// The event is emitted.
-		assert!(metarium_events().contains(&Event::<Test>::InventoryChannelSet(SCRIBE_1, 1)));
+		assert!(metarium_events().contains(&Event::<Test>::PrincipalChannelSet(SCRIBE_1, 1)));
 	});
 }
 
 #[test]
-fn set_inventory_channel_overwrites_as_migration() {
+fn set_principal_channel_overwrites_as_migration() {
 	new_test_ext().execute_with(|| {
 		create_channel_one();
 		// Add a second channel (id 2).
 		assert_ok!(Metarium::channel_added(RuntimeOrigin::signed(SCRIBE_1), CONFIGURATOR));
 		assert_eq!(TotalChannels::<Test>::get(), Some(2));
-		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(1));
+		assert_ok!(Metarium::set_principal_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), Some(1));
 		// Re-setting overwrites — an inventory migration to channel 2.
-		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 2));
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(2));
+		assert_ok!(Metarium::set_principal_channel(RuntimeOrigin::signed(SCRIBE_1), 2));
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), Some(2));
 	});
 }
 
 #[test]
-fn set_inventory_channel_is_none_for_unset_account() {
+fn set_principal_channel_is_none_for_unset_account() {
 	new_test_ext().execute_with(|| {
 		create_channel_one();
-		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
+		assert_ok!(Metarium::set_principal_channel(RuntimeOrigin::signed(SCRIBE_1), 1));
 		// A different account that never set its inventory resolves to None.
-		assert_eq!(InventoryChannelOf::<Test>::get(NON_SCRIBE), None);
+		assert_eq!(PrincipalChannelOf::<Test>::get(NON_SCRIBE), None);
 	});
 }
 
 #[test]
-fn set_inventory_channel_is_self_keyed_no_hijack() {
+fn set_principal_channel_is_self_keyed_no_hijack() {
 	new_test_ext().execute_with(|| {
 		create_channel_one();
 		// NON_SCRIBE (any signed account) sets ITS OWN pointer; it cannot touch SCRIBE_1's.
-		assert_ok!(Metarium::set_inventory_channel(RuntimeOrigin::signed(NON_SCRIBE), 1));
-		assert_eq!(InventoryChannelOf::<Test>::get(NON_SCRIBE), Some(1));
+		assert_ok!(Metarium::set_principal_channel(RuntimeOrigin::signed(NON_SCRIBE), 1));
+		assert_eq!(PrincipalChannelOf::<Test>::get(NON_SCRIBE), Some(1));
 		// SCRIBE_1's entry is untouched — the key is always the signer, so no hijack is possible.
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), None);
 	});
 }
 
 #[test]
-fn set_inventory_channel_rejects_nonexistent_channel() {
+fn set_principal_channel_rejects_nonexistent_channel() {
 	new_test_ext().execute_with(|| {
 		// No channels created → channel 999 does not exist.
 		assert_noop!(
-			Metarium::set_inventory_channel(RuntimeOrigin::signed(SCRIBE_1), 999),
+			Metarium::set_principal_channel(RuntimeOrigin::signed(SCRIBE_1), 999),
 			Error::<Test>::ChannelNotFound
 		);
 		// Nothing is written.
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), None);
 	});
 }
 
 #[test]
-fn set_inventory_channel_requires_signed_origin() {
+fn set_principal_channel_requires_signed_origin() {
 	new_test_ext().execute_with(|| {
 		create_channel_one();
 		assert_noop!(
-			Metarium::set_inventory_channel(RuntimeOrigin::none(), 1),
+			Metarium::set_principal_channel(RuntimeOrigin::none(), 1),
 			BadOrigin
 		);
 	});
 }
 
 #[test]
-fn inventory_channel_is_seeded_from_genesis() {
+fn principal_channel_is_seeded_from_genesis() {
 	// A fresh chain resolves pre-seeded inventory pointers with NO runtime upgrade and no extrinsic.
-	new_test_ext_with_inventory(vec![(SCRIBE_1, 7), (NON_SCRIBE, 42)]).execute_with(|| {
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), Some(7));
-		assert_eq!(InventoryChannelOf::<Test>::get(NON_SCRIBE), Some(42));
+	new_test_ext_with_principal(vec![(SCRIBE_1, 7), (NON_SCRIBE, 42)]).execute_with(|| {
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), Some(7));
+		assert_eq!(PrincipalChannelOf::<Test>::get(NON_SCRIBE), Some(42));
 		// An account not in the genesis set resolves to None.
-		assert_eq!(InventoryChannelOf::<Test>::get(CONFIGURATOR), None);
+		assert_eq!(PrincipalChannelOf::<Test>::get(CONFIGURATOR), None);
 	});
 }
 
 #[test]
-fn empty_genesis_has_no_inventory_channels() {
-	new_test_ext_with_inventory(vec![]).execute_with(|| {
-		assert_eq!(InventoryChannelOf::<Test>::get(SCRIBE_1), None);
+fn empty_genesis_has_no_principal_channels() {
+	new_test_ext_with_principal(vec![]).execute_with(|| {
+		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), None);
 	});
 }
