@@ -26,7 +26,7 @@ smallvec = { workspace = true, default-features = true }
 
 # Local
 pallet-parachain-template = { workspace = true }
-pallet-metarium = { path = "../pallets/metarium", default-features = false }
+pallet-metarium = { workspace = true }
 
 # External
 pallet-assets = { path = "../../../substrate/frame/assets", default-features = false }

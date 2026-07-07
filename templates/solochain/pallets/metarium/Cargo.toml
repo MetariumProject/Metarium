@@ -1,7 +1,7 @@
 [package]
 name = "pallet-metarium"
 authors = ["MetariumProject <https://github.com/MetariumProject>"]
-description = "FRAME pallet metarium for defining custom runtime logic for the Metarium parachain."
+description = "FRAME pallet metarium for defining custom runtime logic for the Metarium solochain."
 version = "0.0.2"
 license = "Proprietary"
 homepage = "https://substrate.io"

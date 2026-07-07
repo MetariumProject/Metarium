@@ -9,7 +9,7 @@ licenses and copyright notices — see each crate's Cargo.toml and the LICENSE-G
 LICENSE-APACHE2 files under substrate/, polkadot/, cumulus/, and bridges/.
 
 The Metarium-specific additions in this repository — notably:
-  - templates/parachain/pallets/metarium   (pallet-metarium)
+  - templates/solochain/pallets/metarium   (pallet-metarium)
   - the Metarium runtime configuration in templates/solochain/runtime
   - genesis/
 are Copyright (C) 2022-2026 Vignesh Sundaresan and are licensed under the

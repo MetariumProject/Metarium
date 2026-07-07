@@ -6,13 +6,13 @@ authoring + GRANDPA finality, sudo-governed validators (`pallet-validator-set`).
 
 ## Don't get this wrong
 - **`pallet-metarium`** (the core pallet: channels/mnembooks, arikuris, custodianship,
-  `PrincipalChannelOf`, …) is a **shared crate** that physically lives at
-  **`templates/parachain/pallets/metarium/`**. Its location does **NOT** make Metarium a parachain —
-  the **solochain** runtime (`templates/solochain/runtime`) depends on it. Edit the pallet there; it
-  flows into the solochain runtime.
+  `PrincipalChannelOf`, …) lives with the solochain at **`templates/solochain/pallets/metarium/`** —
+  Metarium is a **solochain-first** project. The **solochain** runtime
+  (`templates/solochain/runtime`) depends on it; edit the pallet there and it flows into the runtime.
 - **Do NOT build or extend `templates/parachain` for the Metarium chain.** It is upstream Polkadot SDK
   and pulls `revm` (via `pallet-revive`) + cumulus, which won't build on the pinned
-  `rust-toolchain.toml`. Only the solochain is the Metarium chain.
+  `rust-toolchain.toml`. Only the solochain is the Metarium chain. (The parachain runtime still lists
+  `pallet-metarium` as a workspace dependency, but it is not the Metarium chain — don't build it.)
 - The `minimal` and `zombienet` templates are also upstream scaffolding, not the Metarium chain.
 
 ## Build
@@ -27,4 +27,4 @@ for `cxx`/`wasm-opt` (e.g. `export SDKROOT="$(xcrun --show-sdk-path)"`). Linux b
 ## Where things live
 - Runtime config (pallet wiring): `templates/solochain/runtime/src/configs/mod.rs`
 - Genesis presets (dev/local): `templates/solochain/runtime/src/genesis_config_presets.rs`
-- The pallet: `templates/parachain/pallets/metarium/src/` (shared; see above)
+- The pallet: `templates/solochain/pallets/metarium/src/` (see above)
