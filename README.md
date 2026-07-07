@@ -19,7 +19,7 @@ Metarium runtime and pallet added. Anyone may clone, rename, build, run, and for
 - **`templates/solochain/`** — the **Metarium solochain template**: the runtime (wiring `pallet-metarium`),
   the `solochain-template-node`, and — under **`pallets/metarium/`** — **`pallet-metarium`** itself, the
   core content-anchoring pallet. Metarium is a **solochain-first** project: the pallet lives with the
-  solochain, and the solochain runtime is its canonical home.
+  solochain, and the solochain runtime is its canonical home. See [`AGENTS.md`](AGENTS.md).
 - **`substrate/`, `polkadot/`, `cumulus/`, `bridges/`** — the vendored Polkadot SDK this builds on.
 
 ## Make it your own chain
