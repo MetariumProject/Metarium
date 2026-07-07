@@ -573,9 +573,9 @@ members = [
 	"templates/parachain",
 	"templates/parachain/node",
 	"templates/parachain/pallets/template",
-	"templates/parachain/pallets/metarium",
 	"templates/parachain/runtime",
 	"templates/solochain/node",
+	"templates/solochain/pallets/metarium",
 	"templates/solochain/pallets/template",
 	"templates/solochain/pallets/validator-set",
 	"templates/solochain/runtime",
@@ -1006,7 +1006,7 @@ pallet-lottery = { default-features = false, path = "substrate/frame/lottery" }
 pallet-membership = { path = "substrate/frame/membership", default-features = false }
 pallet-message-queue = { path = "substrate/frame/message-queue", default-features = false }
 pallet-meta-tx = { path = "substrate/frame/meta-tx", default-features = false }
-pallet-metarium = { path = "templates/parachain/pallets/metarium", default-features = false }
+pallet-metarium = { path = "templates/solochain/pallets/metarium", default-features = false }
 pallet-migrations = { path = "substrate/frame/migrations", default-features = false }
 pallet-minimal-template = { path = "templates/minimal/pallets/template", default-features = false }
 pallet-mixnet = { default-features = false, path = "substrate/frame/mixnet" }

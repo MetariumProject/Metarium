@@ -16,9 +16,10 @@ This repository is a **fork of the [Polkadot SDK](https://github.com/paritytech/
 Metarium runtime and pallet added. Anyone may clone, rename, build, run, and fork it.
 
 ## Layout
-- **`templates/solochain/`** — the **Metarium solochain template**: the runtime (wiring `pallet-metarium`)
-  and the `solochain-template-node`.
-- **`templates/parachain/pallets/metarium/`** — **`pallet-metarium`**, the core pallet.
+- **`templates/solochain/`** — the **Metarium solochain template**: the runtime (wiring `pallet-metarium`),
+  the `solochain-template-node`, and — under **`pallets/metarium/`** — **`pallet-metarium`** itself, the
+  core content-anchoring pallet. Metarium is a **solochain-first** project: the pallet lives with the
+  solochain, and the solochain runtime is its canonical home.
 - **`substrate/`, `polkadot/`, `cumulus/`, `bridges/`** — the vendored Polkadot SDK this builds on.
 
 ## Make it your own chain
