@@ -69,8 +69,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	//   `spec_version`, and `authoring_version` are the same between Wasm and native.
 	// This value is set to 100 to notify Polkadot-JS App (https://polkadot.js.org/apps) to use
 	//   the compatible custom types.
-	spec_version: 102,
-	impl_version: 3,
+	// 103: metarium v5 — adhoc_arikuri_allowed channel policy + single-write commit
+	// (channel_custodian_metadata_updated writes root+commit arikuris itself; new calls
+	// 33 channel_adhoc_arikuri_policy_set, 34 channel_custodian_metadata_updated_with_arikuris).
+	spec_version: 103,
+	impl_version: 4,
 	apis: apis::RUNTIME_API_VERSIONS,
 	transaction_version: 1,
 	system_version: 1,

@@ -4682,7 +4682,10 @@ fn channel_custodian_metadata_updated_fails_for_valid_channel_id_with_invalid_me
 		let commit_block_number = 2;
 		let commit_size = 64;
 		let previous_custodian_metadata: Vec<u8> = Vec::new();
-		// Ensure the expected error is thrown when ACTANT tries to update the channel custodian metadata with invalid metadata.
+		// v5 semantics: a never-added to_kuri is NO LONGER "invalid metadata" — the call
+		// writes the commit's own kuris itself. On this ad-hoc-allowing channel the lock
+		// protocol still applies, so the dispatch now fails at the (never-requested)
+		// commit thread instead.
 		assert_noop!(
 			Metarium::channel_custodian_metadata_updated(
 				RuntimeOrigin::signed(ACTANT),
@@ -4695,9 +4698,10 @@ fn channel_custodian_metadata_updated_fails_for_valid_channel_id_with_invalid_me
 				commit_size.clone(),
 				false
 			),
-			Error::<Test>::ArikuriNotFound
+			Error::<Test>::ChannelCustodianMetadataCommitThreadNotFound
 		);
-		// Ensure the expected error is thrown when ACTANT tries to update the channel custodian metadata with invalid metadata.
+		// An EMPTY to_kuri stays rejected — pre-v5 it fell out of the pre-existence check
+		// ("" was never an arikuri); now the wall is explicit at input validation.
 		invalid_functional_metadata.clear();
 		assert_noop!(
 			Metarium::channel_custodian_metadata_updated(
@@ -4711,7 +4715,7 @@ fn channel_custodian_metadata_updated_fails_for_valid_channel_id_with_invalid_me
 				commit_size.clone(),
 				false
 			),
-			Error::<Test>::ArikuriNotFound
+			Error::<Test>::EmptyKuriRejected
 		);
 		invalid_functional_metadata = "a".repeat(129).into();
 		// Ensure the expected error is thrown when ACTANT tries to update the channel custodian metadata with invalid metadata.
@@ -6783,5 +6787,353 @@ fn principal_channel_is_seeded_from_genesis() {
 fn empty_genesis_has_no_principal_channels() {
 	new_test_ext_with_principal(vec![]).execute_with(|| {
 		assert_eq!(PrincipalChannelOf::<Test>::get(SCRIBE_1), None);
+	});
+}
+
+/////// ADHOC-ARIKURI CHANNEL POLICY (v5) ///////
+
+/// Shared setup: scribe/custodian SCRIBE_1 creates channel 1 with CONFIGURATOR;
+/// ACTANT is seated as the channel's actant. Returns the channel id.
+fn setup_channel_with_actant() -> u64 {
+	assert_ok!(Metarium::force_add_node_to_scribe_set(RuntimeOrigin::root(), SCRIBE_1));
+	assert_ok!(Metarium::force_add_node_to_custodian_set(RuntimeOrigin::root(), SCRIBE_1));
+	assert_ok!(Metarium::force_add_node_to_scribe_set(RuntimeOrigin::root(), CONFIGURATOR));
+	assert_ok!(Metarium::channel_added(RuntimeOrigin::signed(SCRIBE_1), CONFIGURATOR));
+	assert_ok!(Metarium::force_add_node_to_scribe_set(RuntimeOrigin::root(), ACTANT));
+	assert_ok!(Metarium::node_added_to_channel_actant_set(
+		RuntimeOrigin::signed(CONFIGURATOR),
+		1u64,
+		ACTANT
+	));
+	1u64
+}
+
+#[test]
+fn channel_adhoc_arikuri_policy_set_succeeds_for_custodian_and_configurator_and_fails_for_actant() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		// Events are only recorded past block 0.
+		System::set_block_number(1);
+		// New channels admit ad-hoc arikuris by default.
+		assert_eq!(Channels::<Test>::get(channel_id).unwrap().adhoc_arikuri_allowed, true);
+		// The custodian may flip the policy off…
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			false
+		));
+		assert_eq!(Channels::<Test>::get(channel_id).unwrap().adhoc_arikuri_allowed, false);
+		assert!(metarium_events()
+			.contains(&Event::<Test>::ChannelAdhocArikuriPolicySet(channel_id, false)));
+		// …and the configurator may flip it back on.
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(CONFIGURATOR),
+			channel_id,
+			true
+		));
+		assert_eq!(Channels::<Test>::get(channel_id).unwrap().adhoc_arikuri_allowed, true);
+		// An ACTANT can NOT flip the policy (it could self-promote the channel to
+		// reject the other writers).
+		assert_noop!(
+			Metarium::channel_adhoc_arikuri_policy_set(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				false
+			),
+			Error::<Test>::CallForbidden
+		);
+		// Unknown channel.
+		assert_noop!(
+			Metarium::channel_adhoc_arikuri_policy_set(
+				RuntimeOrigin::signed(SCRIBE_1),
+				42u64,
+				false
+			),
+			Error::<Test>::ChannelNotFound
+		);
+	});
+}
+
+#[test]
+fn arikuri_added_fails_on_commit_root_only_channel_and_recovers_when_reenabled() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			false
+		));
+		let kuri: Vec<u8> = TEST_KURI_1.to_string().into();
+		assert_noop!(
+			Metarium::arikuri_added(RuntimeOrigin::signed(ACTANT), kuri.clone(), channel_id),
+			Error::<Test>::AdHocArikuriRejected
+		);
+		// Re-enable → the same write goes through.
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			true
+		));
+		assert_ok!(Metarium::arikuri_added(RuntimeOrigin::signed(ACTANT), kuri, channel_id));
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 1);
+	});
+}
+
+#[test]
+fn single_call_commit_succeeds_lock_free_on_commit_root_only_channel() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			false
+		));
+		let root_1: Vec<u8> = TEST_KURI_1.to_string().into();
+		let commit_1: Vec<u8> = TEST_KURI_2.to_string().into();
+		let tx_hash: <Test as frame_system::Config>::Hash =
+			H256::from_slice(&[0; 32]).try_into().unwrap();
+		// ONE extrinsic: no lock requested, no arikuris pre-added — the call writes
+		// the root + commit kuri itself and the (empty) from_kuri CAS admits the
+		// first anchor.
+		assert_ok!(Metarium::channel_custodian_metadata_updated(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id,
+			Vec::new(),
+			root_1.clone(),
+			commit_1.clone(),
+			tx_hash,
+			2u64,
+			64u64,
+			false
+		));
+		// Root advanced; both commit kuris are on-chain arikuris.
+		let root_1_bounded: BoundedVec<u8, ConstU32<64>> = root_1.clone().try_into().unwrap();
+		assert_eq!(
+			Channels::<Test>::get(channel_id).unwrap().custodian_metadata,
+			Some(root_1_bounded.clone())
+		);
+		assert!(Arikuris::<Test>::contains_key(channel_id, root_1_bounded.clone()));
+		let commit_1_bounded: BoundedVec<u8, ConstU32<64>> = commit_1.clone().try_into().unwrap();
+		assert!(Arikuris::<Test>::contains_key(channel_id, commit_1_bounded));
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 2);
+		// The CAS is the mutex: a second commit chains off root_1 with no lock…
+		let root_2: Vec<u8> = TEST_KURI_3.to_string().into();
+		let commit_2: Vec<u8> = TEST_KURI_4.to_string().into();
+		assert_ok!(Metarium::channel_custodian_metadata_updated(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id,
+			root_1.clone(),
+			root_2.clone(),
+			commit_2.clone(),
+			tx_hash,
+			3u64,
+			64u64,
+			false
+		));
+		// …while a STALE-BASE commit (from = root_1 again, e.g. a crash re-drive or a
+		// raced writer) hard-fails the CAS with NO partial writes — the strict
+		// counterpart of the idempotent per-kuri writes.
+		let root_3: Vec<u8> = TEST_KURI_5.to_string().into();
+		let commit_3: Vec<u8> = TEST_KURI_6.to_string().into();
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				root_1.clone(),
+				root_3,
+				commit_3,
+				tx_hash,
+				4u64,
+				64u64,
+				false
+			),
+			Error::<Test>::ChannelCustodianMetadataMismatch
+		);
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 4);
+	});
+}
+
+#[test]
+fn single_call_commit_writes_are_idempotent_over_standalone_filed_arikuris() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		// adhoc=true channel, old-style flow: the commit kuri was already filed
+		// standalone; the lock protocol still applies.
+		let root_1: Vec<u8> = TEST_KURI_1.to_string().into();
+		let commit_1: Vec<u8> = TEST_KURI_2.to_string().into();
+		assert_ok!(Metarium::arikuri_added(
+			RuntimeOrigin::signed(ACTANT),
+			commit_1.clone(),
+			channel_id
+		));
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 1);
+		assert_ok!(Metarium::channel_custodian_metadata_commit_thread_lock_requested(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id
+		));
+		let tx_hash: <Test as frame_system::Config>::Hash =
+			H256::from_slice(&[0; 32]).try_into().unwrap();
+		assert_ok!(Metarium::channel_custodian_metadata_updated(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id,
+			Vec::new(),
+			root_1.clone(),
+			commit_1.clone(),
+			tx_hash,
+			2u64,
+			64u64,
+			true
+		));
+		// The pre-filed commit kuri no-opped (counted ONCE); the root was written by
+		// the call itself.
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 2);
+		let root_1_bounded: BoundedVec<u8, ConstU32<64>> = root_1.try_into().unwrap();
+		assert!(Arikuris::<Test>::contains_key(channel_id, root_1_bounded));
+	});
+}
+
+#[test]
+fn lock_still_required_on_adhoc_allowing_channel() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		let tx_hash: <Test as frame_system::Config>::Hash =
+			H256::from_slice(&[0; 32]).try_into().unwrap();
+		// No lock requested on an adhoc=true channel → the legacy protocol still gates.
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				Vec::new(),
+				TEST_KURI_1.to_string().into(),
+				TEST_KURI_2.to_string().into(),
+				tx_hash,
+				2u64,
+				64u64,
+				false
+			),
+			Error::<Test>::ChannelCustodianMetadataCommitThreadNotFound
+		);
+	});
+}
+
+#[test]
+fn batch_commit_lands_arikuris_and_root_atomically_and_is_idempotent() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		// One leaf was already filed standalone — the batch overlaps it deliberately.
+		let leaf_1: Vec<u8> = TEST_KURI_1.to_string().into();
+		assert_ok!(Metarium::arikuri_added(
+			RuntimeOrigin::signed(ACTANT),
+			leaf_1.clone(),
+			channel_id
+		));
+		let leaf_2: Vec<u8> = TEST_KURI_2.to_string().into();
+		let leaf_3: Vec<u8> = TEST_KURI_3.to_string().into();
+		let root_1: Vec<u8> = TEST_KURI_4.to_string().into();
+		let commit_1: Vec<u8> = TEST_KURI_5.to_string().into();
+		let tx_hash: <Test as frame_system::Config>::Hash =
+			H256::from_slice(&[0; 32]).try_into().unwrap();
+		// Lock-free: the CAS serializes the root advance.
+		assert_ok!(Metarium::channel_custodian_metadata_updated_with_arikuris(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id,
+			Vec::new(),
+			root_1.clone(),
+			commit_1.clone(),
+			vec![leaf_1.clone(), leaf_2.clone(), leaf_3.clone()],
+			tx_hash,
+			2u64,
+			64u64,
+			false
+		));
+		// 3 leaves (overlap counted once) + root + commit = 5.
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 5);
+		let root_1_bounded: BoundedVec<u8, ConstU32<64>> = root_1.clone().try_into().unwrap();
+		assert_eq!(
+			Channels::<Test>::get(channel_id).unwrap().custodian_metadata,
+			Some(root_1_bounded)
+		);
+		// A stale-base batch hard-fails the CAS with NO partial writes (atomicity).
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated_with_arikuris(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				Vec::new(),
+				TEST_KURI_6.to_string().into(),
+				TEST_KURI_7.to_string().into(),
+				vec![TEST_KURI_8.to_string().into()],
+				tx_hash,
+				3u64,
+				64u64,
+				false
+			),
+			Error::<Test>::ChannelCustodianMetadataMismatch
+		);
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 5);
+	});
+}
+
+#[test]
+fn batch_commit_rejected_on_commit_root_only_channel_and_over_the_batch_bound() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		let tx_hash: <Test as frame_system::Config>::Hash =
+			H256::from_slice(&[0; 32]).try_into().unwrap();
+		// Over the MaxArikurisPerCommit bound (mock: 64).
+		let oversized: Vec<Vec<u8>> =
+			(0..65).map(|i| format!("kuri_{}", i).into_bytes()).collect();
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated_with_arikuris(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				Vec::new(),
+				TEST_KURI_1.to_string().into(),
+				TEST_KURI_2.to_string().into(),
+				oversized,
+				tx_hash,
+				2u64,
+				64u64,
+				false
+			),
+			Error::<Test>::MaxArikurisPerCommitExceeded
+		);
+		// An empty batched kuri is rejected.
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated_with_arikuris(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				Vec::new(),
+				TEST_KURI_1.to_string().into(),
+				TEST_KURI_2.to_string().into(),
+				vec![Vec::new()],
+				tx_hash,
+				2u64,
+				64u64,
+				false
+			),
+			Error::<Test>::EmptyKuriRejected
+		);
+		// The batch IS an ad-hoc write: a commit+root-only channel rejects it — it
+		// has no ad-hoc leaves by definition and uses the plain call.
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			false
+		));
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated_with_arikuris(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				Vec::new(),
+				TEST_KURI_1.to_string().into(),
+				TEST_KURI_2.to_string().into(),
+				vec![TEST_KURI_3.to_string().into()],
+				tx_hash,
+				2u64,
+				64u64,
+				false
+			),
+			Error::<Test>::AdHocArikuriRejected
+		);
 	});
 }

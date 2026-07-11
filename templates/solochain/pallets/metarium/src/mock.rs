@@ -61,6 +61,7 @@ impl pallet_metarium::Config for Test {
 	type MaxActantsPerChannel = frame_support::traits::ConstU32<64>;
 	type MaxListenersPerChannel = frame_support::traits::ConstU32<64>;
 	type MaxArikurisToTransfer = frame_support::traits::ConstU32<64>;
+	type MaxArikurisPerCommit = frame_support::traits::ConstU32<64>;
 	type MaxCustodianMetadataHistoryLength = frame_support::traits::ConstU32<64>;
 	type CommitLockTtl = frame_support::traits::ConstU64<10>;
 }

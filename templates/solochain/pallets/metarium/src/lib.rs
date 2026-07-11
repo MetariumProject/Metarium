@@ -22,7 +22,7 @@ mod migration;
 #[frame_support::pallet]
 pub mod pallet {
 
-	use crate::migration::{migrate_to_v3, migrate_to_v4};
+	use crate::migration::{migrate_to_v3, migrate_to_v4, migrate_to_v5};
 	use frame_support::{
 		dispatch::DispatchResult, ensure, pallet_prelude::{ValueQuery, *}, BoundedVec,
 		weights::Weight,
@@ -31,7 +31,7 @@ pub mod pallet {
 	use scale_info::prelude::vec::Vec;
 
 	/// The current storage version.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
 
 	#[pallet::pallet]
 	#[pallet::storage_version(STORAGE_VERSION)]
@@ -40,8 +40,11 @@ pub mod pallet {
 	#[pallet::hooks]
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_runtime_upgrade() -> frame_support::weights::Weight {
-			// v3 no-ops when already applied; v4 backfills ChannelMembership for pre-upgrade channels.
-			migrate_to_v3::<T>().saturating_add(migrate_to_v4::<T>())
+			// v3 no-ops when already applied; v4 backfills ChannelMembership for pre-upgrade channels;
+			// v5 materializes adhoc_arikuri_allowed = true on every pre-upgrade channel.
+			migrate_to_v3::<T>()
+				.saturating_add(migrate_to_v4::<T>())
+				.saturating_add(migrate_to_v5::<T>())
 		}
 	}
 
@@ -66,6 +69,12 @@ pub mod pallet {
 		type MaxCommitSize: Get<u64>;
 		// The maximum number of arikuris that can be transferred
 		type MaxArikurisToTransfer: Get<u32>;
+		/// The maximum number of arikuris that may ride in one
+		/// `channel_custodian_metadata_updated_with_arikuris` batch. A pure
+		/// chain-capacity bound (block-weight ceiling for one batch extrinsic) —
+		/// it never caps what a channel can commit: an oversized delta spreads
+		/// its arikuri writes across extrinsics, then advances the root once.
+		type MaxArikurisPerCommit: Get<u32>;
 		// The maximum length of custodian metadata history
 		type MaxCustodianMetadataHistoryLength: Get<u32>;
 		/// How many blocks a commit-thread lock may be held before it goes stale and can be taken over.
@@ -138,7 +147,7 @@ pub mod pallet {
 
 	// Channel V2
 	#[derive(
-		Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, Default, TypeInfo, MaxEncodedLen,
+		Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen,
 	)]
 	pub struct ChannelInfo<
 		AccountId,
@@ -180,6 +189,56 @@ pub mod pallet {
 		pub custodian_metadata: Option<Kuri>,
 		/// functional metadata
 		pub functional_metadata: Option<Kuri>,
+		/// whether ad-hoc arikuris (added outside the root-commit structure, via
+		/// `arikuri_added` / the batch commit variant) are admitted on this channel.
+		/// `false` = commit+root-only: the ONLY arikuris that can enter are the
+		/// root + commit kuri written by `channel_custodian_metadata_updated`
+		/// itself, so the from_kuri CAS is the sole write serializer (no lock).
+		/// Set by the custodian/configurator via `channel_adhoc_arikuri_policy_set`.
+		/// NOTE: the manual `Default` impl below sets this to `true` (the
+		/// backward-compatible value) — commit+root-only is always a deliberate opt-in.
+		pub adhoc_arikuri_allowed: bool,
+	}
+
+	// Manual Default (not derived): every field defaults EXCEPT adhoc_arikuri_allowed,
+	// which defaults to `true` — a derived `bool::default() == false` would silently
+	// construct commit+root-only channels, the strict setting that must only ever be
+	// chosen deliberately via `channel_adhoc_arikuri_policy_set`.
+	impl<
+			AccountId: Default,
+			ChannelActants: Default,
+			ChannelListeners: Default,
+			Kuri,
+			BlockNumber: Default,
+			CustodianMetadataHistory: Default,
+		> Default
+		for ChannelInfo<
+			AccountId,
+			ChannelActants,
+			ChannelListeners,
+			Kuri,
+			BlockNumber,
+			CustodianMetadataHistory,
+		>
+	{
+		fn default() -> Self {
+			Self {
+				block_number: Default::default(),
+				custodian: Default::default(),
+				configurator: Default::default(),
+				id: Default::default(),
+				paused: Default::default(),
+				archived: Default::default(),
+				actants: Default::default(),
+				listeners: Default::default(),
+				maker: Default::default(),
+				metadata: None,
+				historical_custodian_metadata: Default::default(),
+				custodian_metadata: None,
+				functional_metadata: None,
+				adhoc_arikuri_allowed: true,
+			}
+		}
 	}
 
 	/// ChannelMetadataCommitThread info
@@ -416,6 +475,8 @@ pub mod pallet {
 			BoundedVec<u8, T::MaxKuriLength>,
 		),
 		ChannelFunctionalMetadataUpdated(u64, BoundedVec<u8, T::MaxKuriLength>),
+		/// The channel's ad-hoc-arikuri policy was set (channel_id, allowed).
+		ChannelAdhocArikuriPolicySet(u64, bool),
 		ChannelBookUuidSet(u64, BoundedVec<u8, T::MaxKuriLength>),
 		ChannelCustodianMetadataCommitThreadLockRequested(u64, T::AccountId),
 		ChannelCustodianMetadataCommitThreadLockReleased(u64, T::AccountId),
@@ -502,6 +563,16 @@ pub mod pallet {
 		MaxKuriLengthExceeded,
 		/// A commit size is longer than the allowed limit.
 		MaxCommitSizeExceeded,
+		/// The channel is commit+root-only (`adhoc_arikuri_allowed == false`): arikuris may only
+		/// enter as the root/commit written by `channel_custodian_metadata_updated` itself.
+		AdHocArikuriRejected,
+		/// The batch carries more arikuris than `MaxArikurisPerCommit`.
+		MaxArikurisPerCommitExceeded,
+		/// A commit's kuri (to_kuri / commit_kuri / a batched arikuri) is empty. Only
+		/// from_kuri may be empty — the first-anchor sentinel. Pre-v5 this wall was a
+		/// side effect of the to_kuri pre-existence check ("" was never an arikuri);
+		/// now that the commit call writes its own kuris it must be explicit.
+		EmptyKuriRejected,
 		/// 404 for a Arikuri.
 		ArikuriNotFound,
 		/// Arikuri has already been added.
@@ -553,6 +624,23 @@ pub mod pallet {
 			ChannelMembership::<T>::mutate(account, channel_id, |flags| *flags &= !role);
 			if ChannelMembership::<T>::get(account, channel_id) == 0 {
 				ChannelMembership::<T>::remove(account, channel_id);
+			}
+		}
+
+		/// Idempotently ensure `kuri` is registered as an arikuri on `channel_id`:
+		/// already present (even if soft-deleted) → no-op; absent → insert + count + event.
+		/// Idempotent BY DESIGN so a crash-before-finalization re-drive of a commit,
+		/// or a batch that overlaps standalone-filed arikuris, never wedges — the strict
+		/// counterpart is the from_kuri CAS, which stays a hard failure.
+		fn ensure_arikuri(channel_id: u64, kuri: &Kuri<T>) {
+			if !Arikuris::<T>::contains_key(channel_id, kuri.clone()) {
+				Arikuris::<T>::insert(
+					channel_id,
+					kuri.clone(),
+					ArikuriInfo { kuri: kuri.clone(), channel_id, deleted: false },
+				);
+				TotalArikuris::<T>::mutate(channel_id, |total_arikuris| *total_arikuris += 1);
+				Self::deposit_event(Event::ArikuriCreated(channel_id, kuri.clone()));
 			}
 		}
 	}
@@ -1013,6 +1101,9 @@ pub mod pallet {
 				custodian_metadata: Default::default(),
 				historical_custodian_metadata: new_custodian_metadata_history,
 				functional_metadata: Default::default(),
+				// ad-hoc arikuris are admitted by default; the custodian/configurator
+				// may flip the channel to commit+root-only later.
+				adhoc_arikuri_allowed: true,
 			};
 
 			// Update Channels storage.
@@ -1915,6 +2006,58 @@ pub mod pallet {
 			Ok(())
 		}
 
+		/// The channel's ad-hoc-arikuri policy is set by the channel's custodian or configurator.
+		/// `allowed == false` flips the channel to commit+root-only: `arikuri_added` and the
+		/// batch commit variant are rejected, and the only arikuris that can enter are the
+		/// root + commit kuri written by `channel_custodian_metadata_updated` itself — which
+		/// then needs no commit-thread lock (the from_kuri CAS is the sole write serializer).
+		#[pallet::call_index(33)]
+		#[pallet::weight(
+			Weight::from_parts(17_000_000, 0)
+				.saturating_add(Weight::from_parts(0, 4030))
+				.saturating_add(T::DbWeight::get().reads(3))
+				.saturating_add(T::DbWeight::get().writes(1))
+		)]
+		pub fn channel_adhoc_arikuri_policy_set(
+			origin: OriginFor<T>,
+			channel_id: u64,
+			allowed: bool,
+		) -> DispatchResult {
+			// INPUT VALIDATION //
+
+			// check that the signer is added to the scribe-set.
+			let signer = ensure_signed(origin)?;
+			ensure!(Self::is_node_in_scribe_set(&signer), Error::<T>::CallForbidden);
+
+			// SANITY CHECKS //
+
+			// get the channel.
+			let channel = Channels::<T>::get(channel_id.clone()).ok_or(Error::<T>::ChannelNotFound)?;
+
+			// check that the signer is the channel custodian node or is the configurator for
+			// the channel. An actant can NOT flip the policy — otherwise a delegated writer
+			// could self-promote the channel to reject the other writers.
+			ensure!(
+				channel.custodian == signer || channel.configurator == signer,
+				Error::<T>::CallForbidden
+			);
+
+			// UPDATE STORAGE //
+
+			// Update Channels storage.
+			let mut updated_channel = channel.clone();
+			updated_channel.adhoc_arikuri_allowed = allowed;
+			<Channels<T>>::insert(channel_id.clone(), updated_channel);
+
+			// EMIT EVENTS //
+
+			// Emit ChannelAdhocArikuriPolicySet event.
+			Self::deposit_event(Event::ChannelAdhocArikuriPolicySet(channel_id, allowed));
+
+			// RETURN SUCCESSFUL DISPATCHRESULT //
+			Ok(())
+		}
+
 		/// A channel's actant requests to lock the channel's custodian metadata commit thread
 		/// to its address.
 		#[pallet::call_index(20)]
@@ -2112,13 +2255,17 @@ pub mod pallet {
 		}
 
 		/// A channel's custodian metadata is updated by the channel's custodian or actant.
+		/// Writes the commit's own kuris (to_kuri + commit_kuri) as arikuris itself,
+		/// idempotently, after the from_kuri CAS passes. On a commit+root-only channel
+		/// (`adhoc_arikuri_allowed == false`) no commit-thread lock is required — the
+		/// CAS is the sole write serializer — so a commit is this ONE extrinsic.
 		#[pallet::call_index(23)]
 		// #[pallet::weight((10_000 + T::DbWeight::get().writes(1).ref_time(), Pays::No))]
 		#[pallet::weight(
 			Weight::from_parts(22_000_000, 0)
 				.saturating_add(Weight::from_parts(0, 4030))
-				.saturating_add(T::DbWeight::get().reads(4))
-				.saturating_add(T::DbWeight::get().writes(2))
+				.saturating_add(T::DbWeight::get().reads(6))
+				.saturating_add(T::DbWeight::get().writes(6))
 		)]
 		pub fn channel_custodian_metadata_updated(
 			origin: OriginFor<T>,
@@ -2149,6 +2296,11 @@ pub mod pallet {
 			let bounded_commit_kuri: BoundedVec<u8, T::MaxKuriLength> =
 				commit_kuri.try_into().map_err(|_| Error::<T>::MaxKuriLengthExceeded)?;
 
+			// check that the commit's own kuris are non-empty (only from_kuri may be
+			// empty — the first-anchor sentinel): this call WRITES them as arikuris.
+			ensure!(!bounded_to_kuri.is_empty(), Error::<T>::EmptyKuriRejected);
+			ensure!(!bounded_commit_kuri.is_empty(), Error::<T>::EmptyKuriRejected);
+
 			// check that the commit_size is not longer than the allowed limit.
 			ensure!(commit_size <= T::MaxCommitSize::get(), Error::<T>::MaxCommitSizeExceeded);
 
@@ -2172,24 +2324,56 @@ pub mod pallet {
 				);
 			}
 
-			// check that the arikuri points to this channel.
-			ensure!(
-				Arikuris::<T>::contains_key(channel_id.clone(), bounded_to_kuri.clone()),
-				Error::<T>::ArikuriNotFound
-			);
+			// The commit's own kuris (root + commit object) are written by this call
+			// itself, idempotently — a pre-existing kuri (e.g. filed standalone by an
+			// old-style client, or landed by a re-driven commit) is a no-op. When an
+			// INSERT is actually needed, the channel must admit the write (un-archived,
+			// un-paused) — matching what `arikuri_added` would have enforced.
+			if !Arikuris::<T>::contains_key(channel_id.clone(), bounded_to_kuri.clone()) ||
+				!Arikuris::<T>::contains_key(channel_id.clone(), bounded_commit_kuri.clone())
+			{
+				ensure!(channel.archived.eq(&false), Error::<T>::ChannelAlreadyArchived);
+				ensure!(channel.paused.eq(&false), Error::<T>::ChannelAlreadyPaused);
+			}
 
 			// get the channel_custodian_metadata_commit_thread.
-			let channel_custodian_metadata_commit_thread =
-				<ChannelCustodianMetadataCommitThreads<T>>::get(channel_id.clone())
+			// On an ad-hoc-allowing channel the historical lock protocol still applies:
+			// the thread must exist and be locked by the signer (old clients race on
+			// standalone arikuri writes, so the lock still serializes them). On a
+			// commit+root-only channel there is NO standalone write to serialize — the
+			// from_kuri CAS above is the sole mutex — so no lock is required and the
+			// thread record is created on first commit.
+			let channel_custodian_metadata_commit_thread = if channel.adhoc_arikuri_allowed {
+				let thread = <ChannelCustodianMetadataCommitThreads<T>>::get(channel_id.clone())
 					.ok_or(Error::<T>::ChannelCustodianMetadataCommitThreadNotFound)?;
 
-			// ensure that the channel_custodian_metadata_commit_thread is locked by the signer.
-			ensure!(
-				channel_custodian_metadata_commit_thread.locked_by == Some(signer.clone()),
-				Error::<T>::ChannelCustodianMetadataCommitThreadNotLockedByNode
-			);
+				// ensure that the channel_custodian_metadata_commit_thread is locked by the signer.
+				ensure!(
+					thread.locked_by == Some(signer.clone()),
+					Error::<T>::ChannelCustodianMetadataCommitThreadNotLockedByNode
+				);
+				thread
+			} else {
+				<ChannelCustodianMetadataCommitThreads<T>>::get(channel_id.clone()).unwrap_or(
+					ChannelCustodianMetadataCommitThreadInfo {
+						channel_id: channel_id.clone(),
+						latest_commit_kuri: Default::default(),
+						latest_commit_transaction_hash: Default::default(),
+						scribe: Default::default(),
+						locked_by: Default::default(),
+						latest_commit_block_number: Default::default(),
+						latest_commit_size: Default::default(),
+					},
+				)
+			};
 
 			// UPDATE STORAGE //
+
+			// ALL ensures have passed (CAS included) — record the commit's arikuris.
+			// Ordering matters: the CAS ran first, so a stale-base commit never lands
+			// its kuris (the whole dispatch would have aborted above).
+			Self::ensure_arikuri(channel_id.clone(), &bounded_to_kuri);
+			Self::ensure_arikuri(channel_id.clone(), &bounded_commit_kuri);
 
 			// Update ChannelCustomMetadataCommitThreads storage.
 			let mut updated_channel_custodian_metadata_commit_thread =
@@ -2221,6 +2405,184 @@ pub mod pallet {
 			// EMIT EVENTS //
 
 			// Emit ChannelCustodianMetadataUpdated event.
+			Self::deposit_event(Event::ChannelCustodianMetadataUpdated(
+				channel_id,
+				bounded_from_kuri.into(),
+				bounded_to_kuri.into(),
+			));
+
+			// RETURN SUCCESSFUL DISPATCHRESULT //
+			Ok(())
+		}
+
+		/// A channel's custodian metadata is updated by the channel's custodian or actant,
+		/// carrying a batch of arikuris that lands atomically with the root advance —
+		/// the whole commit (leaves + commit object + root + CAS'd root advance) in ONE
+		/// extrinsic. Accepted ONLY on a channel that admits ad-hoc arikuris
+		/// (`adhoc_arikuri_allowed == true`); a commit+root-only channel has no ad-hoc
+		/// leaves by definition and uses the plain call. Per-kuri writes are idempotent
+		/// (a leaf already filed standalone is a no-op), and no commit-thread lock is
+		/// required — the from_kuri CAS serializes the root advance; a concurrent
+		/// old-style locked writer simply loses the CAS and retries. Declared weight
+		/// scales with the actual batch length.
+		#[pallet::call_index(34)]
+		#[pallet::weight(
+			Weight::from_parts(22_000_000, 0)
+				.saturating_add(Weight::from_parts(0, 4030))
+				.saturating_add(T::DbWeight::get().reads(6))
+				.saturating_add(T::DbWeight::get().writes(6))
+				.saturating_add(
+					T::DbWeight::get().reads_writes(
+						arikuris.len() as u64,
+						2u64.saturating_mul(arikuris.len() as u64),
+					)
+				)
+		)]
+		pub fn channel_custodian_metadata_updated_with_arikuris(
+			origin: OriginFor<T>,
+			channel_id: u64,
+			from_kuri: Vec<u8>,
+			to_kuri: Vec<u8>,
+			commit_kuri: Vec<u8>,
+			arikuris: Vec<Vec<u8>>,
+			commit_transaction_hash: T::Hash,
+			commit_block_number: BlockNumberFor<T>,
+			commit_size: u64,
+			release_lock: bool,
+		) -> DispatchResult {
+			// INPUT VALIDATION //
+
+			// check that the signer is added to the scribe-set.
+			let signer = ensure_signed(origin)?;
+			ensure!(Self::is_node_in_scribe_set(&signer), Error::<T>::CallForbidden);
+
+			// check that from_kuri is not longer than the allowed limit.
+			let bounded_from_kuri: BoundedVec<u8, T::MaxKuriLength> =
+				from_kuri.try_into().map_err(|_| Error::<T>::MaxKuriLengthExceeded)?;
+
+			// check that the to_kuri is not longer than the allowed limit.
+			let bounded_to_kuri: BoundedVec<u8, T::MaxKuriLength> =
+				to_kuri.try_into().map_err(|_| Error::<T>::MaxKuriLengthExceeded)?;
+
+			// check that the commit_kuri is not longer than the allowed limit.
+			let bounded_commit_kuri: BoundedVec<u8, T::MaxKuriLength> =
+				commit_kuri.try_into().map_err(|_| Error::<T>::MaxKuriLengthExceeded)?;
+
+			// check that the batch is not longer than the allowed limit.
+			ensure!(
+				arikuris.len() <= T::MaxArikurisPerCommit::get() as usize,
+				Error::<T>::MaxArikurisPerCommitExceeded
+			);
+
+			// check that the commit's own kuris are non-empty (only from_kuri may be
+			// empty — the first-anchor sentinel): this call WRITES them as arikuris.
+			ensure!(!bounded_to_kuri.is_empty(), Error::<T>::EmptyKuriRejected);
+			ensure!(!bounded_commit_kuri.is_empty(), Error::<T>::EmptyKuriRejected);
+
+			// check that every batched kuri is non-empty and not longer than the allowed limit.
+			let mut bounded_arikuris: Vec<Kuri<T>> = Vec::with_capacity(arikuris.len());
+			for kuri in arikuris {
+				let bounded: BoundedVec<u8, T::MaxKuriLength> =
+					kuri.try_into().map_err(|_| Error::<T>::MaxKuriLengthExceeded)?;
+				ensure!(!bounded.is_empty(), Error::<T>::EmptyKuriRejected);
+				bounded_arikuris.push(bounded);
+			}
+
+			// check that the commit_size is not longer than the allowed limit.
+			ensure!(commit_size <= T::MaxCommitSize::get(), Error::<T>::MaxCommitSizeExceeded);
+
+			// SANITY CHECKS //
+
+			// get the channel.
+			let channel = Channels::<T>::get(channel_id.clone()).ok_or(Error::<T>::ChannelNotFound)?;
+
+			// check that the signer is the channel's custodian or actant.
+			ensure!(
+				channel.custodian == signer ||
+					channel.actants.contains(&signer) == true,
+				Error::<T>::CallForbidden
+			);
+
+			// check that the channel admits ad-hoc arikuris — the batch IS an ad-hoc
+			// write; a commit+root-only channel uses the plain call.
+			ensure!(channel.adhoc_arikuri_allowed, Error::<T>::AdHocArikuriRejected);
+
+			// Check that the channel is not archived.
+			ensure!(channel.archived.eq(&false), Error::<T>::ChannelAlreadyArchived);
+			// check that the channel is not paused.
+			ensure!(channel.paused.eq(&false), Error::<T>::ChannelAlreadyPaused);
+
+			// if channel custodian metadata is set, ensure that the bounded_from_kuri is the same as
+			// the channel's custodian_metadata (the CAS — a STRICT failure, never relaxed;
+			// the idempotency below applies only to the per-kuri writes).
+			if channel.custodian_metadata != Default::default() {
+				ensure!(
+					channel.custodian_metadata == bounded_from_kuri.clone().into(),
+					Error::<T>::ChannelCustodianMetadataMismatch
+				);
+			}
+
+			// get the channel_custodian_metadata_commit_thread, creating it on first commit —
+			// no lock is required for the batch call (the CAS serializes the root advance).
+			let channel_custodian_metadata_commit_thread =
+				<ChannelCustodianMetadataCommitThreads<T>>::get(channel_id.clone()).unwrap_or(
+					ChannelCustodianMetadataCommitThreadInfo {
+						channel_id: channel_id.clone(),
+						latest_commit_kuri: Default::default(),
+						latest_commit_transaction_hash: Default::default(),
+						scribe: Default::default(),
+						locked_by: Default::default(),
+						latest_commit_block_number: Default::default(),
+						latest_commit_size: Default::default(),
+					},
+				);
+
+			// UPDATE STORAGE //
+
+			// ALL ensures have passed (CAS included) — land the whole commit atomically:
+			// the batched arikuris, the commit object, and the root, each idempotently.
+			for kuri in bounded_arikuris.iter() {
+				Self::ensure_arikuri(channel_id.clone(), kuri);
+			}
+			Self::ensure_arikuri(channel_id.clone(), &bounded_to_kuri);
+			Self::ensure_arikuri(channel_id.clone(), &bounded_commit_kuri);
+
+			// Update ChannelCustodianMetadataCommitThreads storage.
+			let mut updated_channel_custodian_metadata_commit_thread =
+				channel_custodian_metadata_commit_thread.clone();
+			updated_channel_custodian_metadata_commit_thread.latest_commit_kuri = bounded_commit_kuri
+				.clone()
+				.try_into()
+				.map_err(|_| Error::<T>::MaxKuriLengthExceeded)?;
+			updated_channel_custodian_metadata_commit_thread.latest_commit_transaction_hash =
+				Some(commit_transaction_hash.clone());
+			// Only the signer's OWN lock may be released here — a lock-free batch writer
+			// must not clear a legacy locked writer's hold mid-flight.
+			if release_lock &&
+				updated_channel_custodian_metadata_commit_thread.locked_by ==
+					Some(signer.clone())
+			{
+				updated_channel_custodian_metadata_commit_thread.locked_by = Default::default();
+			}
+			updated_channel_custodian_metadata_commit_thread.scribe = Some(signer.clone());
+			updated_channel_custodian_metadata_commit_thread.latest_commit_block_number =
+				Some(commit_block_number.clone());
+			updated_channel_custodian_metadata_commit_thread.latest_commit_size = Some(commit_size);
+
+			<ChannelCustodianMetadataCommitThreads<T>>::insert(
+				channel_id.clone(),
+				updated_channel_custodian_metadata_commit_thread,
+			);
+
+			// Update Channels storage.
+			let mut updated_channel = channel.clone();
+			updated_channel.custodian_metadata = bounded_to_kuri.clone().into();
+			<Channels<T>>::insert(channel_id.clone(), updated_channel);
+
+			// EMIT EVENTS //
+
+			// Emit ChannelCustodianMetadataUpdated event (same event as the plain call —
+			// downstream watchers key on the root advance, not on how the leaves arrived).
 			Self::deposit_event(Event::ChannelCustodianMetadataUpdated(
 				channel_id,
 				bounded_from_kuri.into(),
@@ -2272,6 +2634,9 @@ pub mod pallet {
 			ensure!(channel.archived.eq(&false), Error::<T>::ChannelAlreadyArchived);
 			// check that the channel is not paused.
 			ensure!(channel.paused.eq(&false), Error::<T>::ChannelAlreadyPaused);
+			// check that the channel admits ad-hoc arikuris — on a commit+root-only
+			// channel the only entrypoint is `channel_custodian_metadata_updated`.
+			ensure!(channel.adhoc_arikuri_allowed, Error::<T>::AdHocArikuriRejected);
 
 			// UPDATE STORAGE //
 
