@@ -39,6 +39,36 @@ cd solochain-template
 cargo build --release
 ```
 
+### Production builds — Ledger (hardware-wallet) support
+
+A plain `cargo build --release` produces a runtime **without** the baked-in
+metadata hash, so hardware wallets that sign via the Ledger Polkadot Generic
+App reject every transaction on the resulting chain (`CheckMetadataHash` is in
+the `TxExtension`, but with no built-in hash a `mode: Enabled` extrinsic fails
+with `Unknown: CannotLookup`).
+
+Any runtime that will be deployed to a real chain must be built with the
+`metadata-hash` feature enabled:
+
+```sh
+cargo build --release --features on-chain-release-build
+# or, runtime only:
+cargo build --release -p solochain-template-runtime --features metadata-hash
+```
+
+Before building, set the chain's **real** token symbol and decimals in
+`runtime/build.rs` (`enable_metadata_hash("UNIT", 12)`) — they are part of the
+hashed metadata, so a mismatch with the chain's registered `tokenSymbol` /
+`tokenDecimals` also breaks Ledger signing.
+
+To verify a live chain accepts Ledger-style transactions without a device:
+sign a `system.remark` with a throwaway key using signing options
+`{ mode: 1, metadataHash }` (hash computed from the chain's metadata v15 with
+`@polkadot-api/merkleize-metadata`) and dry-run it via
+`TaggedTransactionQueue_validate_transaction`. `Invalid: Payment` means the
+hash was accepted (the throwaway account simply has no funds);
+`Unknown: CannotLookup` means the runtime was built without this feature.
+
 ### Embedded Docs
 
 After you build the project, you can use the following command to explore its
