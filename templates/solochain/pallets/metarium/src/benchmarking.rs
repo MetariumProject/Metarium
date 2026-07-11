@@ -144,6 +144,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -198,6 +199,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -256,6 +258,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: true,
 			paused: false,
 		};
@@ -312,6 +315,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -366,6 +370,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -421,6 +426,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -509,6 +515,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -630,6 +637,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -686,6 +694,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -742,6 +751,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -806,6 +816,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -866,6 +877,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -926,6 +938,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -986,6 +999,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1044,6 +1058,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1103,6 +1118,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1168,11 +1184,13 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
 		let updated_channel_info = ChannelInfo {
 			functional_metadata: Some(metadata_bounded.clone()),
+			adhoc_arikuri_allowed: true,
 			..channel_info.clone()
 		};
 		ScribeSetMap::<T>::insert(custodian.clone(), true);
@@ -1231,6 +1249,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1299,6 +1318,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1377,6 +1397,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1458,6 +1479,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1567,6 +1589,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1676,6 +1699,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};
@@ -1737,6 +1761,7 @@ mod benchmarks {
 			metadata: None,
 			custodian_metadata: None,
 			functional_metadata: None,
+			adhoc_arikuri_allowed: true,
 			archived: false,
 			paused: false,
 		};

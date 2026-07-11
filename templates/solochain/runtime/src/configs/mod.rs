@@ -261,6 +261,11 @@ impl pallet_metarium::Config for Runtime {
 	type MaxKuriLength = ConstU32<128>;
 	type MaxCommitSize = ConstU64<1_073_741_824>; // 1 GiB
 	type MaxArikurisToTransfer = ConstU32<1024>;
+	// One batch-commit extrinsic may carry up to 2048 arikuris — a block-capacity
+	// bound (~24% of the normal ref_time budget at RocksDb weights), NOT a cap on
+	// what a channel can commit (oversized deltas spread leaf writes, then advance
+	// the root once).
+	type MaxArikurisPerCommit = ConstU32<2048>;
 	type MaxCustodianMetadataHistoryLength = ConstU32<1024>;
 	type CommitLockTtl = ConstU32<100>;
 }
