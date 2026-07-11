@@ -22,7 +22,7 @@ mod migration;
 #[frame_support::pallet]
 pub mod pallet {
 
-	use crate::migration::{migrate_to_v3, migrate_to_v4, migrate_to_v5};
+	use crate::migration::{migrate_to_v3, migrate_to_v4, migrate_to_v5, migrate_to_v6};
 	use frame_support::{
 		dispatch::DispatchResult, ensure, pallet_prelude::{ValueQuery, *}, BoundedVec,
 		weights::Weight,
@@ -31,7 +31,7 @@ pub mod pallet {
 	use scale_info::prelude::vec::Vec;
 
 	/// The current storage version.
-	const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
+	const STORAGE_VERSION: StorageVersion = StorageVersion::new(6);
 
 	#[pallet::pallet]
 	#[pallet::storage_version(STORAGE_VERSION)]
@@ -41,10 +41,12 @@ pub mod pallet {
 	impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
 		fn on_runtime_upgrade() -> frame_support::weights::Weight {
 			// v3 no-ops when already applied; v4 backfills ChannelMembership for pre-upgrade channels;
-			// v5 materializes adhoc_arikuri_allowed = true on every pre-upgrade channel.
+			// v5 materializes adhoc_arikuri_allowed = true (v5 SHAPE, via alias) on every pre-v5 channel;
+			// v6 replaces the bool with ChannelCommitPolicy (false→Minimal, true→AdHoc, committer/lag None).
 			migrate_to_v3::<T>()
 				.saturating_add(migrate_to_v4::<T>())
 				.saturating_add(migrate_to_v5::<T>())
+				.saturating_add(migrate_to_v6::<T>())
 		}
 	}
 
@@ -143,6 +145,84 @@ pub mod pallet {
 		pub channel_ids: ChannelListeners,
 	}
 
+	// Channel commit policy (storage v6)
+
+	/// How much of a book's internal structure is individually attested on-chain.
+	/// Three genuinely distinct DISPATCH behaviors (Minimal / Content+Detailed / AdHoc);
+	/// `Content` vs `Detailed` differ only in the DECLARED promise a verifier holds the
+	/// channel to (every changed leaf in the batch vs leaves + folder list-yObjs) — the
+	/// pallet cannot check batch completeness (kuris are opaque; it has no tree knowledge)
+	/// and cannot tell a leaf from a folder list. Dispatch admission per variant:
+	///
+	///   variant   | arikuri_added (24) | batch commit (34) | plain commit (23)
+	///   Minimal   |        ✗           |         ✗         |        ✓
+	///   Content   |        ✗           |         ✓         |        ✓
+	///   Detailed  |        ✗           |         ✓         |        ✓
+	///   AdHoc     |        ✓           |         ✓         |        ✓   (legacy, the default)
+	///
+	/// `Content`/`Detailed` close the standalone entrypoint: on a disciplined channel every
+	/// attestation rides a commit — extending v5's no-bare-arikuri security argument to
+	/// per-blob channels. `Minimal` is v5's `adhoc_arikuri_allowed = false`; `AdHoc` is `true`.
+	#[derive(
+		Clone, Copy, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, RuntimeDebug, TypeInfo,
+		MaxEncodedLen,
+	)]
+	pub enum Granularity {
+		/// Root + commit kuri only — the thin trust model (v5's commit+root-only).
+		Minimal,
+		/// Every changed leaf rides the commit batch (declared promise; batch-only).
+		Content,
+		/// Changed leaves + folder list-yObjs ride the batch (declared promise; batch-only).
+		Detailed,
+		/// Legacy per-blob attestation, standalone or batched — no completeness promise.
+		AdHoc,
+	}
+
+	// Manual Default (not derived): `AdHoc` is the backward-compatible value — the
+	// v5-migrated meaning of `adhoc_arikuri_allowed = true`. A derived first-variant
+	// default (`Minimal`) would silently construct commit+root-only channels; the
+	// strict tiers must only ever be chosen deliberately via `channel_commit_policy_set`.
+	impl Default for Granularity {
+		fn default() -> Self {
+			Granularity::AdHoc
+		}
+	}
+
+	/// The channel's commit policy — WHAT is individually attested (`granularity`), WHO may
+	/// advance the root / commit thread (`authorized_committer`), and how stale the anchor
+	/// may run (`max_anchor_lag`). Set only by the custodian/configurator via
+	/// `channel_commit_policy_set` (call 35).
+	#[derive(
+		Clone, Encode, Decode, Eq, PartialEq, RuntimeDebug, TypeInfo, MaxEncodedLen,
+	)]
+	pub struct ChannelCommitPolicy<AccountId> {
+		/// Attestation granularity (dispatch table above).
+		pub granularity: Granularity,
+		/// The write model IS this Option: `None` = every-actant (commits race on the
+		/// from_kuri CAS); `Some(addr)` = single-committer — ONLY this address may advance
+		/// the root (calls 23/34) or take the commit-thread lock (call 20). May be a
+		/// multisig/proxy account for a maintainer group. NOT the lock repurposed: the
+		/// lock is a transient mutex with TTL stale-takeover — it cannot carry a role.
+		pub authorized_committer: Option<AccountId>,
+		/// Custodian's bound on anchor staleness for checkpointing books, in blocks.
+		/// `None` = unbounded. ALARM-enforced by off-chain watchers, never dispatch-enforced
+		/// — the chain cannot enforce liveness (rejecting a LATE anchor is anti-productive,
+		/// and no extrinsic can be forced to arrive).
+		pub max_anchor_lag: Option<u32>,
+	}
+
+	// Manual Default: the migrated meaning of a v5 `adhoc_arikuri_allowed = true` channel —
+	// legacy granularity, every-actant, unbounded. Behavior-identical for existing channels.
+	impl<AccountId> Default for ChannelCommitPolicy<AccountId> {
+		fn default() -> Self {
+			Self {
+				granularity: Granularity::default(),
+				authorized_committer: None,
+				max_anchor_lag: None,
+			}
+		}
+	}
+
 	// Channel info
 
 	// Channel V2
@@ -189,21 +269,21 @@ pub mod pallet {
 		pub custodian_metadata: Option<Kuri>,
 		/// functional metadata
 		pub functional_metadata: Option<Kuri>,
-		/// whether ad-hoc arikuris (added outside the root-commit structure, via
-		/// `arikuri_added` / the batch commit variant) are admitted on this channel.
-		/// `false` = commit+root-only: the ONLY arikuris that can enter are the
-		/// root + commit kuri written by `channel_custodian_metadata_updated`
-		/// itself, so the from_kuri CAS is the sole write serializer (no lock).
-		/// Set by the custodian/configurator via `channel_adhoc_arikuri_policy_set`.
-		/// NOTE: the manual `Default` impl below sets this to `true` (the
-		/// backward-compatible value) — commit+root-only is always a deliberate opt-in.
-		pub adhoc_arikuri_allowed: bool,
+		/// The channel's commit policy (storage v6): attestation granularity, the
+		/// authorized committer (write model), and the anchor-staleness bound.
+		/// Replaces v5's `adhoc_arikuri_allowed` bool — `Minimal` was `false`,
+		/// `AdHoc` was `true`. Set by the custodian/configurator via
+		/// `channel_commit_policy_set` (the v5 bool setter, call 33, survives as a
+		/// compat shim over `granularity`). NOTE: the manual `Default` impl sets
+		/// `AdHoc`/every-actant/unbounded (the backward-compatible values) — every
+		/// stricter setting is a deliberate opt-in.
+		pub commit_policy: ChannelCommitPolicy<AccountId>,
 	}
 
-	// Manual Default (not derived): every field defaults EXCEPT adhoc_arikuri_allowed,
-	// which defaults to `true` — a derived `bool::default() == false` would silently
-	// construct commit+root-only channels, the strict setting that must only ever be
-	// chosen deliberately via `channel_adhoc_arikuri_policy_set`.
+	// Manual Default (not derived): every field defaults; `commit_policy`'s own manual
+	// Default supplies the backward-compatible AdHoc/every-actant/unbounded policy —
+	// the strict settings must only ever be chosen deliberately via
+	// `channel_commit_policy_set`.
 	impl<
 			AccountId: Default,
 			ChannelActants: Default,
@@ -236,7 +316,7 @@ pub mod pallet {
 				historical_custodian_metadata: Default::default(),
 				custodian_metadata: None,
 				functional_metadata: None,
-				adhoc_arikuri_allowed: true,
+				commit_policy: Default::default(),
 			}
 		}
 	}
@@ -476,7 +556,13 @@ pub mod pallet {
 		),
 		ChannelFunctionalMetadataUpdated(u64, BoundedVec<u8, T::MaxKuriLength>),
 		/// The channel's ad-hoc-arikuri policy was set (channel_id, allowed).
+		/// LEGACY (v5) — still emitted by the call-33 shim; v6 watchers should key on
+		/// `ChannelCommitPolicySet`, which call 33 also emits.
 		ChannelAdhocArikuriPolicySet(u64, bool),
+		/// The channel's commit policy was set (channel_id, granularity,
+		/// authorized_committer, max_anchor_lag) — the whole new policy in one event,
+		/// so a committer's watcher can react to any flip with flush + policy re-read.
+		ChannelCommitPolicySet(u64, Granularity, Option<T::AccountId>, Option<u32>),
 		ChannelBookUuidSet(u64, BoundedVec<u8, T::MaxKuriLength>),
 		ChannelCustodianMetadataCommitThreadLockRequested(u64, T::AccountId),
 		ChannelCustodianMetadataCommitThreadLockReleased(u64, T::AccountId),
@@ -563,9 +649,18 @@ pub mod pallet {
 		MaxKuriLengthExceeded,
 		/// A commit size is longer than the allowed limit.
 		MaxCommitSizeExceeded,
-		/// The channel is commit+root-only (`adhoc_arikuri_allowed == false`): arikuris may only
-		/// enter as the root/commit written by `channel_custodian_metadata_updated` itself.
+		/// The channel's granularity rejects this arikuri write: `Minimal` is
+		/// commit+root-only (arikuris may only enter as the root/commit written by
+		/// `channel_custodian_metadata_updated` itself); `Content`/`Detailed` are
+		/// batch-only (standalone `arikuri_added` is rejected — every attestation
+		/// rides a commit).
 		AdHocArikuriRejected,
+		/// The channel is single-committer (`commit_policy.authorized_committer` is set)
+		/// and the signer is not the authorized committer: only the committer may advance
+		/// the root (calls 23/34) or take the commit-thread lock (call 20). Other actants
+		/// push via a fork + pull_request; the custodian may reassign the committer via
+		/// `channel_commit_policy_set`.
+		NotAuthorizedCommitter,
 		/// The batch carries more arikuris than `MaxArikurisPerCommit`.
 		MaxArikurisPerCommitExceeded,
 		/// A commit's kuri (to_kuri / commit_kuri / a batched arikuri) is empty. Only
@@ -1101,9 +1196,10 @@ pub mod pallet {
 				custodian_metadata: Default::default(),
 				historical_custodian_metadata: new_custodian_metadata_history,
 				functional_metadata: Default::default(),
-				// ad-hoc arikuris are admitted by default; the custodian/configurator
-				// may flip the channel to commit+root-only later.
-				adhoc_arikuri_allowed: true,
+				// The backward-compatible policy: AdHoc granularity, every-actant,
+				// unbounded anchor lag. The custodian/configurator may tighten any
+				// axis later via `channel_commit_policy_set`.
+				commit_policy: Default::default(),
 			};
 
 			// Update Channels storage.
@@ -2006,11 +2102,11 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// The channel's ad-hoc-arikuri policy is set by the channel's custodian or configurator.
-		/// `allowed == false` flips the channel to commit+root-only: `arikuri_added` and the
-		/// batch commit variant are rejected, and the only arikuris that can enter are the
-		/// root + commit kuri written by `channel_custodian_metadata_updated` itself — which
-		/// then needs no commit-thread lock (the from_kuri CAS is the sole write serializer).
+		/// COMPAT SHIM over `channel_commit_policy_set` — the v5 bool setter, preserved so
+		/// pre-v6 clients keep working. `allowed == false` → `Granularity::Minimal`
+		/// (commit+root-only); `allowed == true` → `Granularity::AdHoc` (legacy per-blob).
+		/// Touches ONLY the granularity — `authorized_committer` and `max_anchor_lag`
+		/// are preserved. New code should use call 35.
 		#[pallet::call_index(33)]
 		#[pallet::weight(
 			Weight::from_parts(17_000_000, 0)
@@ -2044,15 +2140,94 @@ pub mod pallet {
 
 			// UPDATE STORAGE //
 
-			// Update Channels storage.
+			// Update Channels storage — granularity only; committer + lag preserved.
 			let mut updated_channel = channel.clone();
-			updated_channel.adhoc_arikuri_allowed = allowed;
+			updated_channel.commit_policy.granularity =
+				if allowed { Granularity::AdHoc } else { Granularity::Minimal };
+			let new_policy = updated_channel.commit_policy.clone();
 			<Channels<T>>::insert(channel_id.clone(), updated_channel);
 
 			// EMIT EVENTS //
 
-			// Emit ChannelAdhocArikuriPolicySet event.
+			// Emit BOTH events: the legacy bool event (pre-v6 watchers key on it) and the
+			// full policy event (v6 watchers react to any policy change with flush+re-read).
 			Self::deposit_event(Event::ChannelAdhocArikuriPolicySet(channel_id, allowed));
+			Self::deposit_event(Event::ChannelCommitPolicySet(
+				channel_id,
+				new_policy.granularity,
+				new_policy.authorized_committer,
+				new_policy.max_anchor_lag,
+			));
+
+			// RETURN SUCCESSFUL DISPATCHRESULT //
+			Ok(())
+		}
+
+		/// The channel's commit policy is set by the channel's custodian or configurator —
+		/// the v6 successor to call 33. Sets all three axes atomically:
+		/// - `granularity`: what is individually attested (see the dispatch table on the enum);
+		/// - `authorized_committer`: `Some(addr)` = ONLY that address may advance the root
+		///   (calls 23/34) or take the commit-thread lock (call 20) — the protected-branch
+		///   write model; `None` = every-actant (today's CAS-raced model);
+		/// - `max_anchor_lag`: the custodian's anchor-staleness bound in blocks for
+		///   checkpointing books — recorded on-chain for off-chain watchers to alarm
+		///   against, deliberately NOT dispatch-enforced (the chain cannot force an
+		///   extrinsic to arrive, and rejecting a late anchor would be anti-productive).
+		/// An actant can NOT set the policy — otherwise a delegated writer could
+		/// self-promote to sole committer and reject the other writers.
+		#[pallet::call_index(35)]
+		#[pallet::weight(
+			Weight::from_parts(17_000_000, 0)
+				.saturating_add(Weight::from_parts(0, 4030))
+				.saturating_add(T::DbWeight::get().reads(3))
+				.saturating_add(T::DbWeight::get().writes(1))
+		)]
+		pub fn channel_commit_policy_set(
+			origin: OriginFor<T>,
+			channel_id: u64,
+			granularity: Granularity,
+			authorized_committer: Option<T::AccountId>,
+			max_anchor_lag: Option<u32>,
+		) -> DispatchResult {
+			// INPUT VALIDATION //
+
+			// check that the signer is added to the scribe-set.
+			let signer = ensure_signed(origin)?;
+			ensure!(Self::is_node_in_scribe_set(&signer), Error::<T>::CallForbidden);
+
+			// SANITY CHECKS //
+
+			// get the channel.
+			let channel = Channels::<T>::get(channel_id.clone()).ok_or(Error::<T>::ChannelNotFound)?;
+
+			// check that the signer is the channel custodian node or is the configurator for
+			// the channel (the call-33 gate exactly).
+			ensure!(
+				channel.custodian == signer || channel.configurator == signer,
+				Error::<T>::CallForbidden
+			);
+
+			// UPDATE STORAGE //
+
+			// Update Channels storage.
+			let mut updated_channel = channel.clone();
+			updated_channel.commit_policy = ChannelCommitPolicy {
+				granularity,
+				authorized_committer: authorized_committer.clone(),
+				max_anchor_lag,
+			};
+			<Channels<T>>::insert(channel_id.clone(), updated_channel);
+
+			// EMIT EVENTS //
+
+			// Emit ChannelCommitPolicySet — one event carrying the whole new policy, so a
+			// committer's watcher can react to a mid-window flip with flush + policy re-read.
+			Self::deposit_event(Event::ChannelCommitPolicySet(
+				channel_id,
+				granularity,
+				authorized_committer,
+				max_anchor_lag,
+			));
 
 			// RETURN SUCCESSFUL DISPATCHRESULT //
 			Ok(())
@@ -2085,6 +2260,11 @@ pub mod pallet {
 			let channel = Channels::<T>::get(channel_id.clone()).ok_or(Error::<T>::ChannelNotFound)?;
 			// check that the signer is a committe_node for the channel.
 			ensure!(channel.actants.contains(&signer) == true, Error::<T>::CallForbidden);
+			// single-committer channel: only the authorized committer may take the lock —
+			// the lock is part of the commit path, and the write model guards the whole path.
+			if let Some(ref committer) = channel.commit_policy.authorized_committer {
+				ensure!(&signer == committer, Error::<T>::NotAuthorizedCommitter);
+			}
 			// get the channel_custodian_metadata_commit_thread if it exists.
 			let channel_custodian_metadata_commit_thread =
 				<ChannelCustodianMetadataCommitThreads<T>>::get(channel_id.clone());
@@ -2254,11 +2434,12 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// A channel's custodian metadata is updated by the channel's custodian or actant.
-		/// Writes the commit's own kuris (to_kuri + commit_kuri) as arikuris itself,
-		/// idempotently, after the from_kuri CAS passes. On a commit+root-only channel
-		/// (`adhoc_arikuri_allowed == false`) no commit-thread lock is required — the
-		/// CAS is the sole write serializer — so a commit is this ONE extrinsic.
+		/// A channel's custodian metadata is updated by the channel's custodian or actant
+		/// (on a single-committer channel: ONLY the authorized committer). Writes the
+		/// commit's own kuris (to_kuri + commit_kuri) as arikuris itself, idempotently,
+		/// after the from_kuri CAS passes. On every non-AdHoc granularity no commit-thread
+		/// lock is required — the CAS is the sole write serializer — so a commit is this
+		/// ONE extrinsic.
 		#[pallet::call_index(23)]
 		// #[pallet::weight((10_000 + T::DbWeight::get().writes(1).ref_time(), Pays::No))]
 		#[pallet::weight(
@@ -2315,6 +2496,12 @@ pub mod pallet {
 					channel.actants.contains(&signer) == true,
 				Error::<T>::CallForbidden
 			);
+			// single-committer channel: only the authorized committer may advance the root.
+			// STRICT — even the custodian commits through the committer (or reassigns the
+			// role via `channel_commit_policy_set` first); the protected-branch model.
+			if let Some(ref committer) = channel.commit_policy.authorized_committer {
+				ensure!(&signer == committer, Error::<T>::NotAuthorizedCommitter);
+			}
 			// if channel custodian metadata is set, ensure that the bounded_from_kuri is the same as
 			// the channel's custodian_metadata.
 			if channel.custodian_metadata != Default::default() {
@@ -2337,13 +2524,16 @@ pub mod pallet {
 			}
 
 			// get the channel_custodian_metadata_commit_thread.
-			// On an ad-hoc-allowing channel the historical lock protocol still applies:
+			// On an AdHoc (legacy) channel the historical lock protocol still applies:
 			// the thread must exist and be locked by the signer (old clients race on
-			// standalone arikuri writes, so the lock still serializes them). On a
-			// commit+root-only channel there is NO standalone write to serialize — the
-			// from_kuri CAS above is the sole mutex — so no lock is required and the
-			// thread record is created on first commit.
-			let channel_custodian_metadata_commit_thread = if channel.adhoc_arikuri_allowed {
+			// standalone arikuri writes, so the lock still serializes them). On every
+			// other tier there is NO standalone write to serialize — Minimal admits no
+			// ad-hoc arikuris at all, and Content/Detailed are batch-only (call 24
+			// rejected) — so the from_kuri CAS above is the sole mutex, no lock is
+			// required, and the thread record is created on first commit.
+			let channel_custodian_metadata_commit_thread = if channel.commit_policy.granularity ==
+				Granularity::AdHoc
+			{
 				let thread = <ChannelCustodianMetadataCommitThreads<T>>::get(channel_id.clone())
 					.ok_or(Error::<T>::ChannelCustodianMetadataCommitThreadNotFound)?;
 
@@ -2415,12 +2605,13 @@ pub mod pallet {
 			Ok(())
 		}
 
-		/// A channel's custodian metadata is updated by the channel's custodian or actant,
-		/// carrying a batch of arikuris that lands atomically with the root advance —
-		/// the whole commit (leaves + commit object + root + CAS'd root advance) in ONE
-		/// extrinsic. Accepted ONLY on a channel that admits ad-hoc arikuris
-		/// (`adhoc_arikuri_allowed == true`); a commit+root-only channel has no ad-hoc
-		/// leaves by definition and uses the plain call. Per-kuri writes are idempotent
+		/// A channel's custodian metadata is updated by the channel's custodian or actant
+		/// (on a single-committer channel: ONLY the authorized committer), carrying a
+		/// batch of arikuris that lands atomically with the root advance — the whole
+		/// commit (leaves + commit object + root + CAS'd root advance) in ONE extrinsic.
+		/// Accepted on `Content`/`Detailed`/`AdHoc` granularities; a `Minimal`
+		/// (commit+root-only) channel has no batch to carry and uses the plain call.
+		/// Per-kuri writes are idempotent
 		/// (a leaf already filed standalone is a no-op), and no commit-thread lock is
 		/// required — the from_kuri CAS serializes the root advance; a concurrent
 		/// old-style locked writer simply loses the CAS and retries. Declared weight
@@ -2503,9 +2694,18 @@ pub mod pallet {
 				Error::<T>::CallForbidden
 			);
 
-			// check that the channel admits ad-hoc arikuris — the batch IS an ad-hoc
-			// write; a commit+root-only channel uses the plain call.
-			ensure!(channel.adhoc_arikuri_allowed, Error::<T>::AdHocArikuriRejected);
+			// single-committer channel: only the authorized committer may advance the root
+			// (the batch call advances it too). STRICT — see the plain call's guard.
+			if let Some(ref committer) = channel.commit_policy.authorized_committer {
+				ensure!(&signer == committer, Error::<T>::NotAuthorizedCommitter);
+			}
+
+			// check that the channel's granularity admits a batch — Minimal is
+			// commit+root-only (no batch to carry); Content/Detailed/AdHoc all batch.
+			ensure!(
+				channel.commit_policy.granularity != Granularity::Minimal,
+				Error::<T>::AdHocArikuriRejected
+			);
 
 			// Check that the channel is not archived.
 			ensure!(channel.archived.eq(&false), Error::<T>::ChannelAlreadyArchived);
@@ -2634,9 +2834,14 @@ pub mod pallet {
 			ensure!(channel.archived.eq(&false), Error::<T>::ChannelAlreadyArchived);
 			// check that the channel is not paused.
 			ensure!(channel.paused.eq(&false), Error::<T>::ChannelAlreadyPaused);
-			// check that the channel admits ad-hoc arikuris — on a commit+root-only
-			// channel the only entrypoint is `channel_custodian_metadata_updated`.
-			ensure!(channel.adhoc_arikuri_allowed, Error::<T>::AdHocArikuriRejected);
+			// check that the channel admits STANDALONE arikuris — AdHoc (legacy) only.
+			// Minimal admits none; Content/Detailed are batch-only: on a disciplined
+			// channel every attestation rides a commit, so the standalone entrypoint
+			// (the legacy loophole) is closed.
+			ensure!(
+				channel.commit_policy.granularity == Granularity::AdHoc,
+				Error::<T>::AdHocArikuriRejected
+			);
 
 			// UPDATE STORAGE //
 

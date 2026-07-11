@@ -270,12 +270,63 @@ pub mod v4 {
 		StorageMap<Pallet<T>, Blake2_128Concat, u64, ChannelV4InfoOf<T>>;
 }
 
+// only contains the V5 storage format of `Channels` (ChannelInfo with the
+// `adhoc_arikuri_allowed` bool — replaced by `commit_policy` in v6)
+pub mod v5 {
+	use super::*;
+
+	#[derive(
+		Debug, Clone, Encode, Decode, Eq, PartialEq, Default, TypeInfo, MaxEncodedLen,
+	)]
+	pub struct ChannelV5Info<
+		AccountId,
+		ChannelActants,
+		ChannelListeners,
+		Kuri,
+		BlockNumber,
+		CustodianMetadataHistory,
+	> {
+		pub block_number: BlockNumber,
+		pub custodian: AccountId,
+		pub configurator: AccountId,
+		pub id: u64,
+		pub paused: bool,
+		pub archived: bool,
+		pub actants: ChannelActants,
+		pub listeners: ChannelListeners,
+		pub maker: AccountId,
+		pub metadata: Option<Kuri>,
+		pub historical_custodian_metadata: CustodianMetadataHistory,
+		pub custodian_metadata: Option<Kuri>,
+		pub functional_metadata: Option<Kuri>,
+		pub adhoc_arikuri_allowed: bool,
+	}
+
+	pub type ChannelV5InfoOf<T> = ChannelV5Info<
+		<T as frame_system::Config>::AccountId,
+		ChannelActants<T>,
+		ChannelListeners<T>,
+		Kuri<T>,
+		frame_system::pallet_prelude::BlockNumberFor<T>,
+		CustodianMetadataHistory<T>,
+	>;
+
+	#[storage_alias]
+	pub(super) type Channels<T: Config> =
+		StorageMap<Pallet<T>, Blake2_128Concat, u64, ChannelV5InfoOf<T>>;
+}
+
 /// v5: append `adhoc_arikuri_allowed` to every stored ChannelInfo, materialized as `true` —
 /// pre-upgrade channels keep accepting ad-hoc arikuris, so the upgrade is a behavioral no-op
 /// until a custodian deliberately flips a channel to commit+root-only. This default is
 /// LOAD-BEARING for the rollout: it lets the chain upgrade land BEFORE any client adapts
 /// (the old 4-write commit path still works). Without this translate, old ChannelInfo bytes
 /// fail to SCALE-decode (the trailing bool is missing) and every channel read bricks.
+///
+/// Writes the V5 SHAPE via the v5 alias (NOT the current ChannelInfo): on a below-v5 chain
+/// the migration chain runs v5 THEN v6 in one upgrade, and v6's translate re-decodes what
+/// v5 wrote — which must therefore be v5 bytes, not current-shape bytes. (The same
+/// chain-of-migrations hardening v5 itself applied to v4.)
 pub fn migrate_to_v5<T: Config>() -> Weight {
 	let onchain_version = Pallet::<T>::on_chain_storage_version();
 	if onchain_version < 5 {
@@ -287,7 +338,7 @@ pub fn migrate_to_v5<T: Config>() -> Weight {
 		);
 
 		// We transform the storage values from the old into the new format.
-		Channels::<T>::translate::<v4::ChannelV4InfoOf<T>, _>(
+		v5::Channels::<T>::translate::<v4::ChannelV4InfoOf<T>, _>(
 			|channel_id: u64, channel_info: v4::ChannelV4InfoOf<T>| {
 				log::info!(
 					target: LOG_TARGET,
@@ -295,7 +346,7 @@ pub fn migrate_to_v5<T: Config>() -> Weight {
 					channel_id
 				);
 
-				Some(ChannelInfo {
+				Some(v5::ChannelV5Info {
 					block_number: channel_info.block_number,
 					custodian: channel_info.custodian,
 					configurator: channel_info.configurator,
@@ -316,7 +367,7 @@ pub fn migrate_to_v5<T: Config>() -> Weight {
 
 		// Update storage version.
 		StorageVersion::new(5).put::<Pallet<T>>();
-		let count = Channels::<T>::iter().count();
+		let count = v5::Channels::<T>::iter().count();
 		log::info!(
 			target: LOG_TARGET,
 			" <<< Channels storage updated to v5! Migrated {} channels ✅",
@@ -325,6 +376,78 @@ pub fn migrate_to_v5<T: Config>() -> Weight {
 		T::DbWeight::get().reads_writes(count as u64 + 1, count as u64 + 1)
 	} else {
 		log::info!(target: LOG_TARGET, " >>> migrate_to_v5 unused (already >= v5).");
+		Weight::zero()
+	}
+}
+
+/// v6: replace the `adhoc_arikuri_allowed` bool with the `ChannelCommitPolicy` struct on
+/// every stored ChannelInfo. Mapping: `false → Granularity::Minimal`, `true →
+/// Granularity::AdHoc` — deliberately NOT `Content`: existing per-blob channels never made
+/// the batch-completeness promise, and verifiers must not start holding them to it.
+/// `authorized_committer = None` (every-actant) and `max_anchor_lag = None` (unbounded), so
+/// every existing channel's dispatch behavior is BIT-IDENTICAL post-migration — which is
+/// what lets the chain upgrade land BEFORE any client adapts, exactly like v5. Without this
+/// translate, v5 ChannelInfo bytes fail to SCALE-decode (a bool where the policy struct is
+/// expected) and every channel read bricks.
+pub fn migrate_to_v6<T: Config>() -> Weight {
+	let onchain_version = Pallet::<T>::on_chain_storage_version();
+	if onchain_version < 6 {
+		let count = v5::Channels::<T>::iter().count();
+		log::info!(
+			target: LOG_TARGET,
+			" >>> Updating Channels storage. Migrating {} channels to v6 (adhoc bool → ChannelCommitPolicy)...",
+			count
+		);
+
+		// We transform the storage values from the old into the new format.
+		Channels::<T>::translate::<v5::ChannelV5InfoOf<T>, _>(
+			|channel_id: u64, channel_info: v5::ChannelV5InfoOf<T>| {
+				let granularity = if channel_info.adhoc_arikuri_allowed {
+					Granularity::AdHoc
+				} else {
+					Granularity::Minimal
+				};
+				log::info!(
+					target: LOG_TARGET,
+					"     Migrating channel_id {:?} to v6 (granularity {:?})...",
+					channel_id,
+					granularity
+				);
+
+				Some(ChannelInfo {
+					block_number: channel_info.block_number,
+					custodian: channel_info.custodian,
+					configurator: channel_info.configurator,
+					id: channel_info.id,
+					paused: channel_info.paused,
+					archived: channel_info.archived,
+					actants: channel_info.actants,
+					listeners: channel_info.listeners,
+					maker: channel_info.maker,
+					metadata: channel_info.metadata,
+					historical_custodian_metadata: channel_info.historical_custodian_metadata,
+					custodian_metadata: channel_info.custodian_metadata,
+					functional_metadata: channel_info.functional_metadata,
+					commit_policy: ChannelCommitPolicy {
+						granularity,
+						authorized_committer: None,
+						max_anchor_lag: None,
+					},
+				})
+			},
+		);
+
+		// Update storage version.
+		StorageVersion::new(6).put::<Pallet<T>>();
+		let count = Channels::<T>::iter().count();
+		log::info!(
+			target: LOG_TARGET,
+			" <<< Channels storage updated to v6! Migrated {} channels ✅",
+			count
+		);
+		T::DbWeight::get().reads_writes(count as u64 + 1, count as u64 + 1)
+	} else {
+		log::info!(target: LOG_TARGET, " >>> migrate_to_v6 unused (already >= v6).");
 		Weight::zero()
 	}
 }
@@ -374,42 +497,48 @@ mod tests {
 	use crate::mock::*;
 	use frame_support::BoundedVec;
 
+	fn v4_channel(id: u64) -> v4::ChannelV4InfoOf<Test> {
+		v4::ChannelV4Info {
+			block_number: 7,
+			custodian: 1,
+			configurator: 2,
+			id,
+			paused: false,
+			archived: false,
+			actants: BoundedVec::try_from(vec![4u64]).unwrap(),
+			listeners: Default::default(),
+			maker: 1,
+			metadata: None,
+			historical_custodian_metadata: Default::default(),
+			custodian_metadata: Some(BoundedVec::try_from(b"root".to_vec()).unwrap()),
+			functional_metadata: None,
+		}
+	}
+
 	/// v5 must decode every pre-upgrade (13-field) ChannelInfo and materialize
-	/// adhoc_arikuri_allowed = TRUE — the backward-compatible value that keeps the
-	/// old 4-write client working, which is what lets the chain upgrade land before
-	/// any client adapts.
+	/// adhoc_arikuri_allowed = TRUE in the V5 SHAPE (via the v5 alias) — the
+	/// backward-compatible value that keeps the old 4-write client working, which is
+	/// what lets the chain upgrade land before any client adapts. It must write v5
+	/// bytes (not current-shape bytes) so migrate_to_v6 can re-decode them when the
+	/// chain-of-migrations runs both in one upgrade.
 	#[test]
 	fn migrate_to_v5_materializes_adhoc_arikuri_allowed_true() {
 		new_test_ext().execute_with(|| {
 			// Store a channel in the OLD (v4, 13-field) shape via the alias, exactly
 			// as pre-upgrade bytes would sit on disk.
-			let old_channel: v4::ChannelV4InfoOf<Test> = v4::ChannelV4Info {
-				block_number: 7,
-				custodian: 1,
-				configurator: 2,
-				id: 9,
-				paused: false,
-				archived: false,
-				actants: BoundedVec::try_from(vec![4u64]).unwrap(),
-				listeners: Default::default(),
-				maker: 1,
-				metadata: None,
-				historical_custodian_metadata: Default::default(),
-				custodian_metadata: Some(BoundedVec::try_from(b"root".to_vec()).unwrap()),
-				functional_metadata: None,
-			};
-			v4::Channels::<Test>::insert(9u64, old_channel);
+			v4::Channels::<Test>::insert(9u64, v4_channel(9));
 			StorageVersion::new(4).put::<Pallet<Test>>();
 
-			// The NEW type must not decode the old bytes (the trailing bool is
-			// missing) — this is exactly what the migration exists to fix.
+			// Neither the v5 shape nor the current (v6) type may decode the old bytes
+			// (the trailing bool / policy struct is missing).
+			assert_eq!(v5::Channels::<Test>::get(9u64), None);
 			assert_eq!(Channels::<Test>::get(9u64), None);
 
 			// (mock DbWeight is zero, so the returned weight is not meaningful here)
 			let _ = migrate_to_v5::<Test>();
 
-			// Decodes under the new shape, flag materialized TRUE, payload intact.
-			let migrated = Channels::<Test>::get(9u64).expect("channel must decode post-v5");
+			// Decodes under the V5 shape, flag materialized TRUE, payload intact.
+			let migrated = v5::Channels::<Test>::get(9u64).expect("channel must decode post-v5");
 			assert_eq!(migrated.adhoc_arikuri_allowed, true);
 			assert_eq!(migrated.id, 9);
 			assert_eq!(migrated.block_number, 7);
@@ -421,6 +550,87 @@ mod tests {
 
 			// Idempotent: a re-run no-ops.
 			assert_eq!(migrate_to_v5::<Test>(), Weight::zero());
+		});
+	}
+
+	/// v6 must decode every v5 (bool-flagged) ChannelInfo and replace the bool with
+	/// ChannelCommitPolicy: `true → AdHoc` (NOT Content — no retroactive completeness
+	/// promise), `false → Minimal`, committer None, lag None — bit-identical dispatch
+	/// behavior for existing channels.
+	#[test]
+	fn migrate_to_v6_maps_bool_to_commit_policy() {
+		new_test_ext().execute_with(|| {
+			// Two channels in the v5 shape, one per bool value, exactly as v5 bytes
+			// would sit on disk.
+			let mut adhoc = v4_channel(9);
+			adhoc.id = 9;
+			let v5_adhoc = v5::ChannelV5Info {
+				block_number: adhoc.block_number,
+				custodian: adhoc.custodian,
+				configurator: adhoc.configurator,
+				id: 9,
+				paused: adhoc.paused,
+				archived: adhoc.archived,
+				actants: adhoc.actants.clone(),
+				listeners: adhoc.listeners.clone(),
+				maker: adhoc.maker,
+				metadata: adhoc.metadata.clone(),
+				historical_custodian_metadata: adhoc.historical_custodian_metadata.clone(),
+				custodian_metadata: adhoc.custodian_metadata.clone(),
+				functional_metadata: adhoc.functional_metadata.clone(),
+				adhoc_arikuri_allowed: true,
+			};
+			let mut thin = v5_adhoc.clone();
+			thin.id = 10;
+			thin.adhoc_arikuri_allowed = false;
+			v5::Channels::<Test>::insert(9u64, v5_adhoc);
+			v5::Channels::<Test>::insert(10u64, thin);
+			StorageVersion::new(5).put::<Pallet<Test>>();
+
+			// The current type must not decode v5 bytes (a bool where the policy
+			// struct is expected) — exactly what the migration exists to fix.
+			assert_eq!(Channels::<Test>::get(9u64), None);
+			assert_eq!(Channels::<Test>::get(10u64), None);
+
+			let _ = migrate_to_v6::<Test>();
+
+			// true → AdHoc, false → Minimal; committer/lag None; payload intact.
+			let migrated_adhoc = Channels::<Test>::get(9u64).expect("adhoc channel must decode post-v6");
+			assert_eq!(migrated_adhoc.commit_policy.granularity, Granularity::AdHoc);
+			assert_eq!(migrated_adhoc.commit_policy.authorized_committer, None);
+			assert_eq!(migrated_adhoc.commit_policy.max_anchor_lag, None);
+			assert_eq!(migrated_adhoc.block_number, 7);
+			assert_eq!(
+				migrated_adhoc.custodian_metadata,
+				Some(BoundedVec::try_from(b"root".to_vec()).unwrap())
+			);
+			let migrated_thin = Channels::<Test>::get(10u64).expect("thin channel must decode post-v6");
+			assert_eq!(migrated_thin.commit_policy.granularity, Granularity::Minimal);
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(6));
+
+			// Idempotent: a re-run no-ops.
+			assert_eq!(migrate_to_v6::<Test>(), Weight::zero());
+		});
+	}
+
+	/// The chain-of-migrations case (a below-v5 chain — e.g. one still at v4 — takes v5
+	/// AND v6 in ONE upgrade): v5 writes v5-shape bytes, v6 re-decodes them. This is the
+	/// exact sequence a pre-v5 production chain runs on the v6 runtime upgrade.
+	#[test]
+	fn migrate_v4_to_v6_chains_through_v5_shape() {
+		new_test_ext().execute_with(|| {
+			v4::Channels::<Test>::insert(9u64, v4_channel(9));
+			StorageVersion::new(4).put::<Pallet<Test>>();
+
+			let _ = migrate_to_v5::<Test>();
+			let _ = migrate_to_v6::<Test>();
+
+			// Pre-v5 channels come out AdHoc (the true-mapped value), payload intact.
+			let migrated = Channels::<Test>::get(9u64).expect("channel must decode post-v4→v6 chain");
+			assert_eq!(migrated.commit_policy.granularity, Granularity::AdHoc);
+			assert_eq!(migrated.commit_policy.authorized_committer, None);
+			assert_eq!(migrated.id, 9);
+			assert_eq!(Pallet::<Test>::on_chain_storage_version(), StorageVersion::new(6));
 		});
 	}
 }
