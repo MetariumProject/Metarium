@@ -8,6 +8,7 @@ use crate::{
 	ScribeSetMap, CustodianSetMap,
 	NodeInfoMap, NodeInfo,
 	TotalChannels, Channels, ChannelInfo,
+	Granularity, ChannelCommitPolicy,
 	PrincipalChannelOf,
 	BookUuidToChannel, ChannelBookUuid,
 	ChannelMembership, ROLE_CUSTODIAN, ROLE_CONFIGURATOR, ROLE_MAKER, ROLE_ACTANT, ROLE_LISTENER,
@@ -6814,15 +6815,21 @@ fn channel_adhoc_arikuri_policy_set_succeeds_for_custodian_and_configurator_and_
 		let channel_id = setup_channel_with_actant();
 		// Events are only recorded past block 0.
 		System::set_block_number(1);
-		// New channels admit ad-hoc arikuris by default.
-		assert_eq!(Channels::<Test>::get(channel_id).unwrap().adhoc_arikuri_allowed, true);
+		// New channels admit ad-hoc arikuris by default (AdHoc granularity).
+		assert_eq!(
+			Channels::<Test>::get(channel_id).unwrap().commit_policy.granularity,
+			Granularity::AdHoc
+		);
 		// The custodian may flip the policy off…
 		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
 			RuntimeOrigin::signed(SCRIBE_1),
 			channel_id,
 			false
 		));
-		assert_eq!(Channels::<Test>::get(channel_id).unwrap().adhoc_arikuri_allowed, false);
+		assert_eq!(
+			Channels::<Test>::get(channel_id).unwrap().commit_policy.granularity,
+			Granularity::Minimal
+		);
 		assert!(metarium_events()
 			.contains(&Event::<Test>::ChannelAdhocArikuriPolicySet(channel_id, false)));
 		// …and the configurator may flip it back on.
@@ -6831,7 +6838,10 @@ fn channel_adhoc_arikuri_policy_set_succeeds_for_custodian_and_configurator_and_
 			channel_id,
 			true
 		));
-		assert_eq!(Channels::<Test>::get(channel_id).unwrap().adhoc_arikuri_allowed, true);
+		assert_eq!(
+			Channels::<Test>::get(channel_id).unwrap().commit_policy.granularity,
+			Granularity::AdHoc
+		);
 		// An ACTANT can NOT flip the policy (it could self-promote the channel to
 		// reject the other writers).
 		assert_noop!(
@@ -7135,5 +7145,290 @@ fn batch_commit_rejected_on_commit_root_only_channel_and_over_the_batch_bound() 
 			),
 			Error::<Test>::AdHocArikuriRejected
 		);
+	});
+}
+
+/////// CHANNEL COMMIT POLICY (v6) ///////
+
+/// Call 35 sets all three axes atomically, gated exactly like call 33
+/// (custodian/configurator; never an actant), and emits the full-policy event.
+#[test]
+fn channel_commit_policy_set_gates_and_sets_all_axes() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		System::set_block_number(1);
+		// The custodian sets Content + single-committer + a lag bound.
+		assert_ok!(Metarium::channel_commit_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			Granularity::Content,
+			Some(ACTANT),
+			Some(600u32)
+		));
+		assert_eq!(
+			Channels::<Test>::get(channel_id).unwrap().commit_policy,
+			ChannelCommitPolicy {
+				granularity: Granularity::Content,
+				authorized_committer: Some(ACTANT),
+				max_anchor_lag: Some(600u32),
+			}
+		);
+		assert!(metarium_events().contains(&Event::<Test>::ChannelCommitPolicySet(
+			channel_id,
+			Granularity::Content,
+			Some(ACTANT),
+			Some(600u32)
+		)));
+		// The configurator may set it too.
+		assert_ok!(Metarium::channel_commit_policy_set(
+			RuntimeOrigin::signed(CONFIGURATOR),
+			channel_id,
+			Granularity::Detailed,
+			None,
+			None
+		));
+		// An ACTANT can NOT set the policy (it could self-promote to sole committer
+		// and reject the other writers).
+		assert_noop!(
+			Metarium::channel_commit_policy_set(
+				RuntimeOrigin::signed(ACTANT),
+				channel_id,
+				Granularity::AdHoc,
+				Some(ACTANT),
+				None
+			),
+			Error::<Test>::CallForbidden
+		);
+		// Unknown channel.
+		assert_noop!(
+			Metarium::channel_commit_policy_set(
+				RuntimeOrigin::signed(SCRIBE_1),
+				42u64,
+				Granularity::Minimal,
+				None,
+				None
+			),
+			Error::<Test>::ChannelNotFound
+		);
+	});
+}
+
+/// The call-33 shim flips ONLY the granularity (true → AdHoc, false → Minimal) and
+/// preserves the committer + lag axes; it emits BOTH the legacy bool event and the
+/// full-policy event.
+#[test]
+fn call_33_shim_touches_only_granularity_and_preserves_committer_and_lag() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		System::set_block_number(1);
+		assert_ok!(Metarium::channel_commit_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			Granularity::Content,
+			Some(ACTANT),
+			Some(600u32)
+		));
+		// Shim to false → Minimal; committer + lag untouched.
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			false
+		));
+		let policy = Channels::<Test>::get(channel_id).unwrap().commit_policy;
+		assert_eq!(policy.granularity, Granularity::Minimal);
+		assert_eq!(policy.authorized_committer, Some(ACTANT));
+		assert_eq!(policy.max_anchor_lag, Some(600u32));
+		// metarium_events() DRAINS — capture once, assert both events against it.
+		let events = metarium_events();
+		assert!(events
+			.contains(&Event::<Test>::ChannelAdhocArikuriPolicySet(channel_id, false)));
+		assert!(events.contains(&Event::<Test>::ChannelCommitPolicySet(
+			channel_id,
+			Granularity::Minimal,
+			Some(ACTANT),
+			Some(600u32)
+		)));
+		// Shim to true → AdHoc; committer + lag still untouched.
+		assert_ok!(Metarium::channel_adhoc_arikuri_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			true
+		));
+		let policy = Channels::<Test>::get(channel_id).unwrap().commit_policy;
+		assert_eq!(policy.granularity, Granularity::AdHoc);
+		assert_eq!(policy.authorized_committer, Some(ACTANT));
+	});
+}
+
+/// The granularity dispatch table: Content/Detailed close the STANDALONE entrypoint
+/// (every attestation rides a commit) but admit the batch; the plain call is
+/// lock-free on every non-AdHoc tier.
+#[test]
+fn content_and_detailed_are_batch_only_and_lock_free() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		let tx_hash: <Test as frame_system::Config>::Hash =
+			H256::from_slice(&[0; 32]).try_into().unwrap();
+		for granularity in [Granularity::Content, Granularity::Detailed] {
+			assert_ok!(Metarium::channel_commit_policy_set(
+				RuntimeOrigin::signed(SCRIBE_1),
+				channel_id,
+				granularity,
+				None,
+				None
+			));
+			// Standalone arikuri_added is REJECTED — the legacy loophole is closed.
+			assert_noop!(
+				Metarium::arikuri_added(
+					RuntimeOrigin::signed(ACTANT),
+					TEST_KURI_3.to_string().into(),
+					channel_id
+				),
+				Error::<Test>::AdHocArikuriRejected
+			);
+		}
+		// The batch call goes through, lock-free, and lands leaves + root + commit.
+		assert_ok!(Metarium::channel_custodian_metadata_updated_with_arikuris(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id,
+			Vec::new(),
+			TEST_KURI_1.to_string().into(),
+			TEST_KURI_2.to_string().into(),
+			vec![TEST_KURI_3.to_string().into()],
+			tx_hash,
+			2u64,
+			64u64,
+			false
+		));
+		assert_eq!(TotalArikuris::<Test>::get(channel_id), 3);
+		// The plain call also works on a Content channel with NO lock (nothing
+		// standalone to serialize) — CAS from the batch-landed root.
+		let root_2: Vec<u8> = "test_kuri_root_2".to_string().into();
+		let commit_2: Vec<u8> = "test_kuri_commit_2".to_string().into();
+		assert_ok!(Metarium::channel_custodian_metadata_updated(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id,
+			TEST_KURI_1.to_string().into(),
+			root_2,
+			commit_2,
+			tx_hash,
+			3u64,
+			64u64,
+			false
+		));
+	});
+}
+
+/// Single-committer channels: ONLY the authorized committer may advance the root
+/// (plain + batch calls) or take the commit-thread lock. STRICT — even the
+/// custodian is rejected (it reassigns the role via call 35 instead). Every-actant
+/// (`None`) keeps today's behavior.
+#[test]
+fn authorized_committer_guards_root_advance_and_lock() {
+	new_test_ext().execute_with(|| {
+		let channel_id = setup_channel_with_actant();
+		// Seat a second actant so a non-committer actant exists.
+		assert_ok!(Metarium::force_add_node_to_scribe_set(RuntimeOrigin::root(), ACTANT_2));
+		assert_ok!(Metarium::node_added_to_channel_actant_set(
+			RuntimeOrigin::signed(CONFIGURATOR),
+			channel_id,
+			ACTANT_2
+		));
+		let tx_hash: <Test as frame_system::Config>::Hash =
+			H256::from_slice(&[0; 32]).try_into().unwrap();
+		// ACTANT becomes the sole committer (AdHoc granularity keeps every call live).
+		assert_ok!(Metarium::channel_commit_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			Granularity::AdHoc,
+			Some(ACTANT),
+			None
+		));
+		// A non-committer actant may NOT take the lock…
+		assert_noop!(
+			Metarium::channel_custodian_metadata_commit_thread_lock_requested(
+				RuntimeOrigin::signed(ACTANT_2),
+				channel_id
+			),
+			Error::<Test>::NotAuthorizedCommitter
+		);
+		// …nor batch-commit…
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated_with_arikuris(
+				RuntimeOrigin::signed(ACTANT_2),
+				channel_id,
+				Vec::new(),
+				TEST_KURI_1.to_string().into(),
+				TEST_KURI_2.to_string().into(),
+				vec![TEST_KURI_3.to_string().into()],
+				tx_hash,
+				2u64,
+				64u64,
+				false
+			),
+			Error::<Test>::NotAuthorizedCommitter
+		);
+		// …and even the CUSTODIAN is rejected on the plain call (strict: the
+		// protected-branch model — reassign via call 35 instead).
+		assert_noop!(
+			Metarium::channel_custodian_metadata_updated(
+				RuntimeOrigin::signed(SCRIBE_1),
+				channel_id,
+				Vec::new(),
+				TEST_KURI_1.to_string().into(),
+				TEST_KURI_2.to_string().into(),
+				tx_hash,
+				2u64,
+				64u64,
+				false
+			),
+			Error::<Test>::NotAuthorizedCommitter
+		);
+		// The committer itself commits fine (batch, lock-free).
+		assert_ok!(Metarium::channel_custodian_metadata_updated_with_arikuris(
+			RuntimeOrigin::signed(ACTANT),
+			channel_id,
+			Vec::new(),
+			TEST_KURI_1.to_string().into(),
+			TEST_KURI_2.to_string().into(),
+			vec![TEST_KURI_3.to_string().into()],
+			tx_hash,
+			2u64,
+			64u64,
+			false
+		));
+		// Standalone arikuri_added by the OTHER actant still works on AdHoc — the
+		// committer restricts the ROOT ADVANCE, not object attestation (open object
+		// store, protected branch).
+		assert_ok!(Metarium::arikuri_added(
+			RuntimeOrigin::signed(ACTANT_2),
+			"test_kuri_standalone".to_string().into(),
+			channel_id
+		));
+		// Back to every-actant: the second actant can commit again.
+		assert_ok!(Metarium::channel_commit_policy_set(
+			RuntimeOrigin::signed(SCRIBE_1),
+			channel_id,
+			Granularity::AdHoc,
+			None,
+			None
+		));
+		let root_2: Vec<u8> = "test_kuri_root_2".to_string().into();
+		let commit_2: Vec<u8> = "test_kuri_commit_2".to_string().into();
+		assert_ok!(Metarium::channel_custodian_metadata_commit_thread_lock_requested(
+			RuntimeOrigin::signed(ACTANT_2),
+			channel_id
+		));
+		assert_ok!(Metarium::channel_custodian_metadata_updated(
+			RuntimeOrigin::signed(ACTANT_2),
+			channel_id,
+			TEST_KURI_1.to_string().into(),
+			root_2,
+			commit_2,
+			tx_hash,
+			3u64,
+			64u64,
+			true
+		));
 	});
 }

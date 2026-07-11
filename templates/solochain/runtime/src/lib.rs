@@ -72,7 +72,12 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// 103: metarium v5 — adhoc_arikuri_allowed channel policy + single-write commit
 	// (channel_custodian_metadata_updated writes root+commit arikuris itself; new calls
 	// 33 channel_adhoc_arikuri_policy_set, 34 channel_custodian_metadata_updated_with_arikuris).
-	spec_version: 103,
+	// 105: metarium v6 — ChannelCommitPolicy replaces the adhoc bool (granularity
+	// Minimal|Content|Detailed|AdHoc + authorized_committer + max_anchor_lag; new call
+	// 35 channel_commit_policy_set; call 33 survives as a granularity shim). 104 is
+	// skipped upstream: padimai-chain-testnet shipped its v5 as 104, and one artifact
+	// must upgrade both it (104→105) and pre-v5 chains (103→105).
+	spec_version: 105,
 	impl_version: 4,
 	apis: apis::RUNTIME_API_VERSIONS,
 	transaction_version: 1,
