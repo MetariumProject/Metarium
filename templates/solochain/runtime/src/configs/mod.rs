@@ -259,7 +259,10 @@ impl pallet_metarium::Config for Runtime {
 	type MaxActantsPerChannel = ConstU32<1024>;
 	type MaxListenersPerChannel = ConstU32<1024>;
 	type MaxKuriLength = ConstU32<128>;
-	type MaxCommitSize = ConstU64<1_073_741_824>; // 1 GiB
+	// The pallet checks this against the commit_size a committer DECLARES. mnem declares a book's
+	// cumulative size, so this caps a whole book; at 1 GiB an artist residency book on a Metarium chain
+	// stopped at 0.985 GiB (2026-10-22). 1 TiB.
+	type MaxCommitSize = ConstU64<1_099_511_627_776>; // 1 TiB
 	type MaxArikurisToTransfer = ConstU32<1024>;
 	// One batch-commit extrinsic may carry up to 2048 arikuris — a block-capacity
 	// bound (~24% of the normal ref_time budget at RocksDb weights), NOT a cap on
