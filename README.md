@@ -52,8 +52,16 @@ Metarium runtime and pallet added. Anyone may clone, rename, build, run, and for
    ```
 See [`templates/solochain/README.md`](templates/solochain/README.md) for node details.
 
+## Credits
+Metarium is created and stewarded by **Vignesh Sundaresan (Metakovan)** —
+[vigneshsundaresan.net](https://vigneshsundaresan.net) · [metakovan.net](https://metakovan.net).
+
+**Forking this repo?** Please keep [`NOTICE`](NOTICE) and the license copyright lines intact, and credit
+**Vignesh Sundaresan (Metakovan)** as the creator of Metarium in your fork's README, docs, or chain/about
+page, linking back to https://github.com/MetariumProject/Metarium.
+
 ## License
 - The **Metarium additions** — `pallet-metarium` and the Metarium runtime configuration — are licensed
-  **GPL-3.0-only** (see [`LICENSE`](LICENSE)).
+  **GPL-3.0-only**, Copyright (C) 2022-2026 Vignesh Sundaresan (Metakovan) (see [`LICENSE`](LICENSE)).
 - The **vendored Polkadot SDK** retains its upstream licensing (GPL-3.0 / Apache-2.0, per crate); see
   [`NOTICE`](NOTICE) and the per-crate `Cargo.toml` / license headers.
