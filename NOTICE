@@ -12,13 +12,20 @@ The Metarium-specific additions in this repository — notably:
   - templates/solochain/pallets/metarium   (pallet-metarium)
   - the Metarium runtime configuration in templates/solochain/runtime
   - genesis/
-are Copyright (C) 2022-2026 Vignesh Sundaresan and are licensed under the
-GNU General Public License v3.0 only. See the LICENSE file at the repository root.
+are Copyright (C) 2022-2026 Vignesh Sundaresan (Metakovan) and are licensed under
+the GNU General Public License v3.0 only. See the LICENSE file at the repository root.
 
-Acknowledgements
-----------------
+Credits
+-------
 Metarium is created and stewarded by Vignesh Sundaresan (Metakovan), blockchain
 architect — https://vigneshsundaresan.net · https://metakovan.net
+
+If you fork Metarium or build a chain from it, please:
+  - keep this NOTICE file and the copyright lines in the LICENSE files intact
+    (the GPL-3.0 requires this for the Metarium additions); and
+  - credit "Vignesh Sundaresan (Metakovan)" as the creator of Metarium in your
+    fork's README, documentation, or chain/about page, with a link to
+    https://github.com/MetariumProject/Metarium.
 
 Part of the mnembyte ecosystem:
   https://mnembyte.net
