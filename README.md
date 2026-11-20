@@ -53,6 +53,8 @@ Metarium runtime and pallet added. Anyone may clone, rename, build, run, and for
 See [`templates/solochain/README.md`](templates/solochain/README.md) for node details.
 
 ## Credits
+Metarium is a product of [Portkey Technologies Pte Ltd](https://portkey.sg).
+
 Metarium is created and maintained by **Vignesh Sundaresan (Metakovan)** —
 [vigneshsundaresan.net](https://vigneshsundaresan.net) · [metakovan.net](https://metakovan.net).
 
