@@ -41,33 +41,48 @@ cargo build --release
 
 ### Production builds — Ledger (hardware-wallet) support
 
-A plain `cargo build --release` produces a runtime **without** the baked-in
-metadata hash, so hardware wallets that sign via the Ledger Polkadot Generic
-App reject every transaction on the resulting chain (`CheckMetadataHash` is in
-the `TxExtension`, but with no built-in hash a `mode: Enabled` extrinsic fails
-with `Unknown: CannotLookup`).
+Every runtime built from this template — including a plain
+`cargo build --release` — carries the **metadata hash** that hardware wallets
+signing via the Ledger Polkadot Generic App need. There is no longer a build
+without it: a runtime lacking the hash rejects every Ledger transaction
+(`mode: Enabled` → `Unknown: CannotLookup`) while software signers keep working,
+so the gap went unnoticed on a live chain until a Ledger was plugged in. The
+Wasm is compiled twice (once to hash the metadata), so runtime builds take longer.
+`--features metadata-hash` / `on-chain-release-build` still work; the first is
+now a no-op.
 
-Any runtime that will be deployed to a real chain must be built with the
-`metadata-hash` feature enabled:
+The token symbol and decimals are part of the hashed metadata. They come from the
+chain manifest — `chains/metarium.toml` (MAI, 12) by default:
 
 ```sh
-cargo build --release --features on-chain-release-build
-# or, runtime only:
-cargo build --release -p solochain-template-runtime --features metadata-hash
+# build for a specific chain (absolute path, or relative to the repo root)
+METARIUM_MANIFEST=/path/to/<chain>.toml cargo build --release -p solochain-template-runtime
 ```
 
-Before building, set the chain's **real** token symbol and decimals in
-`runtime/build.rs` (`enable_metadata_hash("UNIT", 12)`) — they are part of the
-hashed metadata, so a mismatch with the chain's registered `tokenSymbol` /
-`tokenDecimals` also breaks Ledger signing.
+```toml
+[token]
+symbol   = "MAI"
+decimals = 12
+```
 
-To verify a live chain accepts Ledger-style transactions without a device:
-sign a `system.remark` with a throwaway key using signing options
-`{ mode: 1, metadataHash }` (hash computed from the chain's metadata v15 with
-`@polkadot-api/merkleize-metadata`) and dry-run it via
-`TaggedTransactionQueue_validate_transaction`. `Invalid: Payment` means the
-hash was accepted (the throwaway account simply has no funds);
-`Unknown: CannotLookup` means the runtime was built without this feature.
+The build prints `runtime metadata hash: token <SYMBOL>, <decimals> decimals`.
+The same values become the runtime's `TOKEN_SYMBOL` / `TOKEN_DECIMALS` and the
+node's chain-spec `tokenSymbol` / `tokenDecimals`. For an **existing** chain the
+manifest must match its live `system_properties` exactly, or Ledger signing fails.
+
+To verify a live chain accepts Ledger-style transactions without a device
+(do this after every runtime upgrade — the hash changes with the metadata):
+
+```sh
+cd scripts/ledger-ready && npm ci && node ledger-ready.mjs wss://<your-rpc>
+```
+
+It signs a `system.remark` with a throwaway, unfunded key using
+`{ mode: 1, metadataHash }` and asks the chain to validate it (nothing is
+submitted). `READY` = the correct hash gives `Invalid: Payment` (accepted, just
+no funds) and a wrong hash gives `Invalid: BadProof`; `NOT READY` =
+`Unknown: CannotLookup`, the runtime was built without the hash and needs an
+upgrade.
 
 ### Embedded Docs
 

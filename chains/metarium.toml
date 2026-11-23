@@ -1,0 +1,13 @@
+# Chain manifest — the template's own defaults.
+#
+# Every Metarium chain runs the same code; what differs per chain lives in a manifest like
+# this one, kept in the chain's code book (docs/plans/chain-manifests.md). Point a build at
+# another chain's manifest with METARIUM_MANIFEST=<path>.
+#
+# Today the runtime build reads [token] (plan milestone M2): it is baked into the runtime's
+# metadata hash (Ledger / hardware-wallet signing) and into the node's chain-spec properties.
+# It MUST match the live chain's system_properties, or Ledger signing fails.
+
+[token]
+symbol   = "MAI"
+decimals = 12
