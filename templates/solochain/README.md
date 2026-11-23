@@ -51,8 +51,10 @@ Wasm is compiled twice (once to hash the metadata), so runtime builds take longe
 `--features metadata-hash` / `on-chain-release-build` still work; the first is
 now a no-op.
 
-The token symbol and decimals are part of the hashed metadata. They come from the
-chain manifest — `chains/metarium.toml` (MAI, 12) by default:
+The runtime's name and version and its token come from the chain manifest —
+`chains/metarium.toml` by default; a real chain keeps its own manifest in its data book
+(`spec_name`, `impl_name`, `spec_version`, `impl_version`, `[token]`). The token symbol and
+decimals are part of the hashed metadata:
 
 ```sh
 # build for a specific chain (absolute path, or relative to the repo root)
@@ -60,12 +62,18 @@ METARIUM_MANIFEST=/path/to/<chain>.toml cargo build --release -p solochain-templ
 ```
 
 ```toml
+spec_name    = "mychain"
+impl_name    = "mychain"
+spec_version = 106
+impl_version = 6
+
 [token]
 symbol   = "MAI"
 decimals = 12
+ss58     = 42
 ```
 
-The build prints `runtime metadata hash: token <SYMBOL>, <decimals> decimals`.
+The build prints `runtime <spec_name> spec <n> (impl …) · metadata hash: token <SYMBOL>, <decimals> decimals`.
 The same values become the runtime's `TOKEN_SYMBOL` / `TOKEN_DECIMALS` and the
 node's chain-spec `tokenSymbol` / `tokenDecimals`. For an **existing** chain the
 manifest must match its live `system_properties` exactly, or Ledger signing fails.
