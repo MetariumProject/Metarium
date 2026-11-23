@@ -207,8 +207,33 @@ fn generate() -> Chain {
 	chain
 }
 
+/// Pin the Wasm build to THIS repository's `Cargo.lock`.
+///
+/// `substrate-wasm-builder` looks for the lock by walking UP from `OUT_DIR` — i.e. from the
+/// target directory, not from the workspace being built. With an external `CARGO_TARGET_DIR`
+/// (how chain runtimes are built) it found some other checkout's lock, or none at all and
+/// resolved dependencies fresh: mummai spec 107 was built against an unrelated checkout's lock,
+/// and a rebuild of the same commit elsewhere pulled newer crates and came out different
+/// (2026-11-23). Pointing `WASM_BUILD_WORKSPACE_HINT` at the repo root makes every build use the
+/// committed lock, so a runtime is reproducible from its source commit alone.
+#[cfg(feature = "std")]
+fn pin_cargo_lock() {
+	println!("cargo:rerun-if-env-changed=WASM_BUILD_WORKSPACE_HINT");
+	if env::var_os("WASM_BUILD_WORKSPACE_HINT").is_none() {
+		let root = repo_root().canonicalize().expect("repository root exists");
+		assert!(
+			root.join("Cargo.lock").exists(),
+			"no Cargo.lock at the repository root {} — refusing an unpinned runtime build",
+			root.display()
+		);
+		// Build scripts are single-threaded; the Wasm builder below reads this in-process.
+		env::set_var("WASM_BUILD_WORKSPACE_HINT", &root);
+	}
+}
+
 #[cfg(feature = "std")]
 fn main() {
+	pin_cargo_lock();
 	let c = generate();
 	println!(
 		"cargo:warning=runtime {} spec {} (impl {} {}) · metadata hash: token {}, {} decimals (Ledger-ready)",
