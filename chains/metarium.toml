@@ -1,13 +1,31 @@
-# Chain manifest — the template's own defaults.
+# Chain manifest — the template's own defaults (docs/plans/chain-manifests.md).
 #
-# Every Metarium chain runs the same code; what differs per chain lives in a manifest like
-# this one, kept in the chain's code book (docs/plans/chain-manifests.md). Point a build at
-# another chain's manifest with METARIUM_MANIFEST=<path>.
+# Every Metarium chain builds from the same source; what differs per chain lives in a manifest
+# like this one, kept in the CHAIN'S OWN DATA BOOK (not in this repo). Build for a chain with:
 #
-# Today the runtime build reads [token] (plan milestone M2): it is baked into the runtime's
-# metadata hash (Ledger / hardware-wallet signing) and into the node's chain-spec properties.
-# It MUST match the live chain's system_properties, or Ledger signing fails.
+#   METARIUM_MANIFEST=/path/to/<chain>.toml cargo build --release -p solochain-template-runtime
+#
+# The runtime's VERSION and its token (metadata hash for Ledger signing + the node's chain-spec
+# properties) are generated from it by templates/solochain/runtime/build.rs. For an EXISTING
+# chain, spec_name / impl_name / [token] must equal the live chain's, and spec_version must be
+# higher than the live one for an upgrade.
+
+spec_name    = "metarium"
+impl_name    = "metarium"
+# Version history (the template's):
+#   103: metarium v5 — adhoc_arikuri_allowed channel policy + single-write commit
+#        (channel_custodian_metadata_updated writes root+commit arikuris itself; new calls
+#        33 channel_adhoc_arikuri_policy_set, 34 channel_custodian_metadata_updated_with_arikuris).
+#   105: metarium v6 — ChannelCommitPolicy replaces the adhoc bool (granularity
+#        Minimal|Content|Detailed|AdHoc + authorized_committer + max_anchor_lag; new call
+#        35 channel_commit_policy_set; call 33 survives as a granularity shim). 104 is skipped
+#        upstream: padimai-chain-testnet shipped its v5 as 104, and one artifact must upgrade
+#        both it (104→105) and pre-v5 chains (103→105).
+#   (since: MaxCommitSize 1 GiB → 1 TiB; Ledger-ready builds; VERSION from this manifest)
+spec_version = 105
+impl_version = 4
 
 [token]
 symbol   = "MAI"
 decimals = 12
+ss58     = 42      # must be 42 today (runtime SS58Prefix constant)

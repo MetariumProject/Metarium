@@ -64,8 +64,22 @@ Two rules keep a live chain safe:
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **M1** | `build.rs` reads the manifest; generated `RuntimeVersion` and constants; `chains/metarium.toml`. | With the default manifest the runtime builds **byte-identical** to today's (the spike showed this works if `lib.rs` line numbers do not shift). |
-| **M2** | The token into `enable_metadata_hash` and the node's chain-spec properties. | A manifest's token reaches both. |
+| **M1** ✅ | `build.rs` reads the manifest; generated `RuntimeVersion` and constants; `chains/metarium.toml`. | With the default manifest the runtime builds **byte-identical** to today's (the spike showed this works if `lib.rs` line numbers do not shift). |
+| **M2** ✅ | The token into `enable_metadata_hash` and the node's chain-spec properties. | A manifest's token reaches both. |
 | **M3** | A release script: build from a code book's manifest, print size + blake2, check the live chain, prepare `set_code`. | iyalkodi, built from its own code book (ch11) with its manifest, matches its live runtime. |
 
 mummai and mnemchain move onto manifests at their next upgrade.
+
+## Status (2026-11-23)
+
+M2 landed in #15 (token → metadata hash + chain-spec properties; the hash is always on). M1 lands
+with the manifest-generated `VERSION` (top-level `spec_name`, `impl_name`, `spec_version`,
+`impl_version`); `[constants]` overrides are not implemented yet — no chain needs one, and the build
+refuses unknown keys. Decided with the operator: each chain keeps its manifest in its own **data
+book** (its code book holds the shared source), so a chain upgrade is: pull `main` into the chain's
+code book → bump `spec_version` in the data-book manifest → build with `METARIUM_MANIFEST` pointing
+at it → `set_code`. Byte-identity with a chain's previous build is not a goal across the source
+move (the metarium pallet's path and `lib.rs` lines changed, and panic locations are in the Wasm);
+each chain's first manifest build is verified instead on a fork of live state (metadata identical
+except `System.Version`).
+

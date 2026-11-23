@@ -1,28 +1,37 @@
-//! Runtime build script.
+//! Runtime build script — one source, a manifest per chain.
 //!
-//! Every Wasm runtime built from this template carries a **metadata hash**
-//! (`CheckMetadataHash`), always — there is no build without it. A runtime
-//! without one rejects every transaction from the Ledger Polkadot Generic app
-//! with `Unknown: CannotLookup`, and nothing else notices: software signers keep
-//! working. It happened on a live Metarium chain (mummai): a Ledger-ready
-//! runtime (spec 103) was followed by plain `cargo build --release` upgrades
-//! that quietly dropped the hash, so it is no longer opt-in.
-//!
-//! The token symbol and decimals are part of the hashed metadata, so they come
-//! from the chain's manifest — `chains/metarium.toml` by default, or the file
-//! named by `METARIUM_MANIFEST` (absolute, or relative to the repository root):
+//! Every Metarium chain builds from this same source. What differs per chain lives in its
+//! **manifest** (docs/plans/chain-manifests.md): `chains/metarium.toml` by default, or the file
+//! named by `METARIUM_MANIFEST` (absolute, or relative to the repository root). A chain keeps its
+//! manifest in its own data book and points the build at it:
 //!
 //! ```toml
+//! spec_name    = "mummai"
+//! impl_name    = "mummai"
+//! spec_version = 108          # bump it for an upgrade
+//! impl_version = 6
+//!
 //! [token]
 //! symbol   = "MAI"
 //! decimals = 12
+//! ss58     = 42
 //! ```
 //!
-//! The same values are exported to the runtime as `TOKEN_SYMBOL` /
-//! `TOKEN_DECIMALS`, and the node's chain-spec properties use those, so the
-//! hash and what wallets read from `system_properties` cannot drift apart.
+//! From it this script generates, into `OUT_DIR`:
+//! - `version.rs` — the runtime's `VERSION` (`include!`d by `lib.rs`);
+//! - `token.rs` — `TOKEN_SYMBOL` / `TOKEN_DECIMALS`, which the node's chain-spec properties use.
+//!
+//! It also ALWAYS builds the Wasm with the **metadata hash** for that token (`CheckMetadataHash`).
+//! A runtime without one rejects every Ledger Polkadot Generic app transaction with
+//! `Unknown: CannotLookup` while software signers keep working — that happened on a live Metarium
+//! chain (mummai: spec 103 was Ledger-ready, plain builds 104–106 silently dropped it), so there is
+//! no build without it.
+//!
+//! The build prints the chain, version and token it built for. It re-runs when `METARIUM_MANIFEST`
+//! or the manifest file changes, so a build for one chain is never reused for another.
 
 use std::{
+	collections::BTreeMap,
 	env, fs,
 	path::{Path, PathBuf},
 };
@@ -48,84 +57,196 @@ fn manifest_path() -> PathBuf {
 	}
 }
 
-/// Reads `[token] symbol` and `[token] decimals` from the manifest. A deliberately
-/// tiny parser (no build dependency): `key = value` lines, `#` comments.
-fn read_token(path: &Path) -> (String, u8) {
-	let text = fs::read_to_string(path)
-		.unwrap_or_else(|e| panic!("cannot read chain manifest {}: {e}", path.display()));
-	let (mut in_token, mut symbol, mut decimals) = (false, None, None);
-	for raw in text.lines() {
-		let line = raw.split('#').next().unwrap_or("").trim();
-		if line.is_empty() {
-			continue;
-		}
-		if line.starts_with('[') {
-			in_token = line == "[token]";
-			continue;
-		}
-		if !in_token {
-			continue;
-		}
-		if let Some((key, value)) = line.split_once('=') {
-			let value = value.trim();
-			match key.trim() {
-				"symbol" => symbol = Some(value.trim_matches('"').to_string()),
-				"decimals" =>
-					decimals = Some(value.replace('_', "").parse::<u8>().unwrap_or_else(|_| {
-						panic!(
-							"chain manifest {}: [token] decimals must be 0-255, got {value}",
-							path.display()
-						)
-					})),
-				_ => {},
-			}
-		}
-	}
-	let symbol = symbol
-		.filter(|s| {
-			!s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-		})
-		.unwrap_or_else(|| {
-			panic!("chain manifest {}: [token] symbol is missing or invalid", path.display())
-		});
-	let decimals = decimals
-		.unwrap_or_else(|| panic!("chain manifest {}: [token] decimals is missing", path.display()));
-	(symbol, decimals)
+/// The manifest's `key = value` pairs, keyed by `section.key` (top-level keys have no prefix).
+/// A deliberately tiny parser (no build dependency): `#` comments, `[section]` headers,
+/// "quoted" strings and integers with `_` separators.
+struct Manifest {
+	path: PathBuf,
+	values: BTreeMap<String, String>,
 }
 
-/// Writes `TOKEN_SYMBOL` / `TOKEN_DECIMALS` for `lib.rs` to `include!`. Runs for both
-/// the native (std) build and the inner Wasm build, which must agree.
-fn export_token() -> (String, u8) {
+impl Manifest {
+	fn read(path: &Path) -> Self {
+		let text = fs::read_to_string(path)
+			.unwrap_or_else(|e| panic!("cannot read chain manifest {}: {e}", path.display()));
+		let (mut section, mut values) = (String::new(), BTreeMap::new());
+		for (n, raw) in text.lines().enumerate() {
+			let line = raw.split('#').next().unwrap_or("").trim();
+			if line.is_empty() {
+				continue;
+			}
+			if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+				section = name.trim().to_string();
+				continue;
+			}
+			let (key, value) = line.split_once('=').unwrap_or_else(|| {
+				panic!("chain manifest {} line {}: expected `key = value`", path.display(), n + 1)
+			});
+			let key = if section.is_empty() {
+				key.trim().to_string()
+			} else {
+				format!("{section}.{}", key.trim())
+			};
+			let value = value.trim();
+			let value = value
+				.strip_prefix('"')
+				.and_then(|v| v.strip_suffix('"'))
+				.map(str::to_string)
+				.unwrap_or_else(|| value.replace('_', ""));
+			if values.insert(key.clone(), value).is_some() {
+				panic!("chain manifest {}: `{key}` is set twice", path.display());
+			}
+		}
+		Manifest { path: path.to_path_buf(), values }
+	}
+
+	fn get(&self, key: &str) -> Option<&str> {
+		self.values.get(key).map(String::as_str)
+	}
+
+	fn name(&self, key: &str) -> String {
+		let v = self
+			.get(key)
+			.unwrap_or_else(|| panic!("chain manifest {}: `{key}` is missing", self.path.display()));
+		assert!(
+			!v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+			"chain manifest {}: `{key}` = {v:?} must be non-empty [A-Za-z0-9_-]",
+			self.path.display()
+		);
+		v.to_string()
+	}
+
+	fn number<T: std::str::FromStr>(&self, key: &str) -> T {
+		let v = self
+			.get(key)
+			.unwrap_or_else(|| panic!("chain manifest {}: `{key}` is missing", self.path.display()));
+		v.parse().unwrap_or_else(|_| {
+			panic!("chain manifest {}: `{key}` = {v:?} is not a valid number", self.path.display())
+		})
+	}
+}
+
+struct Chain {
+	spec_name: String,
+	impl_name: String,
+	spec_version: u32,
+	impl_version: u32,
+	symbol: String,
+	decimals: u8,
+}
+
+/// Reads the manifest and writes `version.rs` + `token.rs` for `lib.rs` to `include!`. Runs for
+/// both the native (std) build and the inner Wasm build, which therefore always agree.
+fn generate() -> Chain {
 	let path = manifest_path();
 	println!("cargo:rerun-if-env-changed=METARIUM_MANIFEST");
 	println!("cargo:rerun-if-changed={}", path.display());
-	let (symbol, decimals) = read_token(&path);
-	let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by cargo")).join("token.rs");
+	let m = Manifest::read(&path);
+
+	let spec_name = m.name("spec_name");
+	let chain = Chain {
+		impl_name: m.get("impl_name").map(|_| m.name("impl_name")).unwrap_or_else(|| spec_name.clone()),
+		spec_name,
+		spec_version: m.number("spec_version"),
+		impl_version: m.number("impl_version"),
+		symbol: m.name("token.symbol"),
+		decimals: m.number("token.decimals"),
+	};
+	// The SS58 prefix is still a runtime constant (configs: `SS58Prefix = 42`); refuse a manifest
+	// that expects anything else rather than build a runtime that silently disagrees with it.
+	if let Some(ss58) = m.get("token.ss58") {
+		assert!(
+			ss58 == "42",
+			"chain manifest {}: token.ss58 = {ss58} — only 42 is supported (runtime SS58Prefix)",
+			path.display()
+		);
+	}
+	for key in m.values.keys() {
+		assert!(
+			matches!(
+				key.as_str(),
+				"spec_name" |
+					"impl_name" | "spec_version" |
+					"impl_version" | "token.symbol" |
+					"token.decimals" | "token.ss58"
+			),
+			"chain manifest {}: unknown key `{key}` (not supported by this source yet)",
+			path.display()
+		);
+	}
+
+	let out = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
+	let Chain { spec_name, impl_name, spec_version, impl_version, symbol, decimals } = &chain;
 	fs::write(
-		&out,
+		out.join("version.rs"),
+		format!(
+			"#[sp_version::runtime_version]\n\
+			 pub const VERSION: RuntimeVersion = RuntimeVersion {{\n\
+			 \tspec_name: alloc::borrow::Cow::Borrowed({spec_name:?}),\n\
+			 \timpl_name: alloc::borrow::Cow::Borrowed({impl_name:?}),\n\
+			 \tauthoring_version: 1,\n\
+			 \tspec_version: {spec_version},\n\
+			 \timpl_version: {impl_version},\n\
+			 \tapis: apis::RUNTIME_API_VERSIONS,\n\
+			 \ttransaction_version: 1,\n\
+			 \tsystem_version: 1,\n\
+			 }};\n"
+		),
+	)
+	.expect("write version.rs");
+	fs::write(
+		out.join("token.rs"),
 		format!(
 			"/// The chain's token symbol, from its manifest. Baked into the metadata hash.\n\
-			 pub const TOKEN_SYMBOL: &str = \"{symbol}\";\n\
+			 pub const TOKEN_SYMBOL: &str = {symbol:?};\n\
 			 /// The chain's token decimals, from its manifest. Baked into the metadata hash.\n\
 			 pub const TOKEN_DECIMALS: u8 = {decimals};\n"
 		),
 	)
 	.expect("write token.rs");
-	(symbol, decimals)
+	chain
+}
+
+/// Pin the Wasm build to THIS repository's `Cargo.lock`.
+///
+/// `substrate-wasm-builder` looks for the lock by walking UP from `OUT_DIR` — i.e. from the
+/// target directory, not from the workspace being built. With an external `CARGO_TARGET_DIR`
+/// (how chain runtimes are built) it found some other checkout's lock, or none at all and
+/// resolved dependencies fresh: mummai spec 107 was built against an unrelated checkout's lock,
+/// and a rebuild of the same commit elsewhere pulled newer crates and came out different
+/// (2026-11-23). Pointing `WASM_BUILD_WORKSPACE_HINT` at the repo root makes every build use the
+/// committed lock, so a runtime is reproducible from its source commit alone.
+#[cfg(feature = "std")]
+fn pin_cargo_lock() {
+	println!("cargo:rerun-if-env-changed=WASM_BUILD_WORKSPACE_HINT");
+	if env::var_os("WASM_BUILD_WORKSPACE_HINT").is_none() {
+		let root = repo_root().canonicalize().expect("repository root exists");
+		assert!(
+			root.join("Cargo.lock").exists(),
+			"no Cargo.lock at the repository root {} — refusing an unpinned runtime build",
+			root.display()
+		);
+		// Build scripts are single-threaded; the Wasm builder below reads this in-process.
+		env::set_var("WASM_BUILD_WORKSPACE_HINT", &root);
+	}
 }
 
 #[cfg(feature = "std")]
 fn main() {
-	let (symbol, decimals) = export_token();
-	println!("cargo:warning=runtime metadata hash: token {symbol}, {decimals} decimals (Ledger-ready)");
+	pin_cargo_lock();
+	let c = generate();
+	println!(
+		"cargo:warning=runtime {} spec {} (impl {} {}) · metadata hash: token {}, {} decimals (Ledger-ready)",
+		c.spec_name, c.spec_version, c.impl_name, c.impl_version, c.symbol, c.decimals
+	);
 	substrate_wasm_builder::WasmBuilder::init_with_defaults()
-		.enable_metadata_hash(&symbol, decimals)
+		.enable_metadata_hash(&c.symbol, c.decimals)
 		.build();
 }
 
-/// The Wasm builder is not run when compiling this crate for Wasm, but the token
-/// constants still have to exist for `lib.rs`.
+/// The Wasm builder is not run when compiling this crate for Wasm, but the generated files still
+/// have to exist for `lib.rs`.
 #[cfg(not(feature = "std"))]
 fn main() {
-	export_token();
+	generate();
 }
